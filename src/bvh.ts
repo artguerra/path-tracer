@@ -23,6 +23,11 @@ export class AABB {
     this.maxCorner = vec3.max(this.maxCorner, point);
   }
 
+  area(): number {
+    const diag = vec3.sub(this.maxCorner, this.minCorner);
+    return diag[0] * diag[1] + diag[1] * diag[2] + diag[2] * diag[0];
+  }
+
   largestAxis(): number {
     const diag = vec3.sub(this.maxCorner, this.minCorner);
 
@@ -93,16 +98,20 @@ class BVHNode {
   }
 }
 
+type BVHHeuristic = "MIDPOINT" | "SAH";
+
 export class BVHTree {
   readonly rootIdx: number = 0;
+  heuristic: BVHHeuristic;
   nodes: BVHNode[];
   size: number;
 
   indices: Uint32Array;
   primitives: BVHPrimitive[];
 
-  constructor(mesh: MergedGeometry) {
+  constructor(mesh: MergedGeometry, heuristic: BVHHeuristic = "SAH") {
     this.size = 0;
+    this.heuristic = heuristic;
     this.indices = mesh.indices;
 
     const numTris = mesh.indices.length / 3;
@@ -132,10 +141,32 @@ export class BVHTree {
 
   buildRecursive(nodeIdx: number) {
     const node = this.nodes[nodeIdx];
-    if (node.numPrimitives! <= 2) return;
+    if (this.heuristic === "MIDPOINT" && node.numPrimitives! <= 2) return;
 
-    const splitAxis = node.bounds!.largestAxis();
-    const split = vec3.midpoint(node.bounds!.minCorner, node.bounds!.maxCorner)[splitAxis];
+    let splitAxis = 0;
+    let split = 0;
+    if (this.heuristic === "SAH") {
+      let minCost = MAX_VALUE;
+      for (let axis = 0; axis < 3; ++axis) {
+        for (let i = 0; i < node.numPrimitives!; ++i) {
+          const tri = node.firstPrimitiveOffset! + i;
+          const centroid = this.primitives[tri].centroid;
+          const cost = this.evalSAH(nodeIdx, centroid, axis);
+
+          if (cost < minCost) {
+            minCost = cost;
+            splitAxis = axis;
+            split = centroid[axis];
+          }
+        }
+      }
+
+      const parentCost = node.numPrimitives! * node.bounds!.area();
+      if (minCost >= parentCost) return;
+    } else if (this.heuristic === "MIDPOINT") {
+      splitAxis = node.bounds!.largestAxis();
+      split = vec3.midpoint(node.bounds!.minCorner, node.bounds!.maxCorner)[splitAxis];
+    }
 
     let i = node.firstPrimitiveOffset!;
     let j = i + node.numPrimitives! - 1;
@@ -180,6 +211,33 @@ export class BVHTree {
 
     this.buildRecursive(left);
     this.buildRecursive(right);
+  }
+
+  private evalSAH(nodeIdx: number, centroid: Vec3, axis: number): number {
+    const node = this.nodes[nodeIdx];
+    const thresh = centroid[axis];
+    const leftBox = new AABB(), rightBox = new AABB();
+
+    let leftCount = 0, rightCount = 0;
+    for (let i = 0; i < node.numPrimitives!; ++i) {
+      const tri = node.firstPrimitiveOffset! + i;
+      const prim = this.primitives[tri];
+
+      if (prim.centroid[axis] <= thresh) {
+        leftCount++;
+        leftBox.grow(prim.v0);
+        leftBox.grow(prim.v1);
+        leftBox.grow(prim.v2);
+      } else {
+        rightCount++;
+        rightBox.grow(prim.v0);
+        rightBox.grow(prim.v1);
+        rightBox.grow(prim.v2);
+      }
+    }
+
+    const cost = leftCount * leftBox.area() + rightCount * rightBox.area();
+    return (cost > 0) ? cost : MAX_VALUE;
   }
 
   private updateBounds(nodeId: number) {

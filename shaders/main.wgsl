@@ -355,8 +355,8 @@ fn light_shade(
 
     let decayed_albedo = m.albedo * 0.6;
     m.albedo = mix(m.albedo, decayed_albedo, t);
-    m.roughness = t;
-    m.metalness = t;
+    m.roughness = mix(m.roughness, min(m.roughness + 0.2, 1), t);
+    m.metalness = mix(m.metalness, max(m.metalness - 0.2, 0), t);
   }
 
   let fr = brdf(wi, wo, normal, m.albedo, m.roughness, m.metalness);
