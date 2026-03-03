@@ -79,7 +79,7 @@ var<storage, read> light_sources: array<LightSource>;
 var<storage, read> bvh_nodes: array<BVHNode>;
 
 @group(0) @binding(8)
-var<storage, read> sorted_triangles: array<u32>; // triangles sorted according to bvh
+var<storage, read> sorted_triangles: array<u32>; // triangles sorted according to bvh + mesh idx (i0, i1, i2, im)
 
 // ----------------------------- helper functions -----------------------------
 
@@ -93,9 +93,14 @@ fn get_vert_normal(vert_index: u32) -> vec3f {
   return vec3f(normals[idx], normals[idx + 1u], normals[idx + 2u]);
 }
 
-fn get_triangle(tri_index: u32) -> vec3u {
-  let idx = 3u * tri_index;
+fn get_triangle(tri_idx: u32) -> vec3u {
+  let idx = 3u * tri_idx;
   return vec3u(triangles[idx], triangles[idx + 1u], triangles[idx + 2u]);
+}
+
+fn get_bvh_triangle(tri_idx: u32) -> vec4u {
+  let idx = 4u * tri_idx;
+  return vec4u(sorted_triangles[idx], sorted_triangles[idx + 1u], sorted_triangles[idx + 2u], sorted_triangles[idx + 3u]);
 }
 
 fn sqr(x: f32) -> f32 { 
@@ -443,9 +448,9 @@ fn raster_vertex_main(input: RasterVertexInput) -> RasterVertexOutput {
   let cam = scene.camera;
   let mesh = meshes[input.mesh_idx];
 
-  let tri_index = input.vertex_idx / 3u;
+  let tri_idx = input.vertex_idx / 3u;
   let tri_vert_index = input.vertex_idx % 3u;
-  let triangle = get_triangle(mesh.tri_offset + tri_index);
+  let triangle = get_triangle(mesh.tri_offset + tri_idx);
   let vert_index = mesh.pos_offset + triangle[tri_vert_index];
 
   var output: RasterVertexOutput;
@@ -493,7 +498,7 @@ struct Ray {
 
 struct Hit {
   mesh_idx: u32,
-  tri_index: u32,
+  tri_idx: u32,
   u: f32, // barycentric coordinates of the intersection
   v: f32,
   t: f32, // distance to ray's origin of the intersection
@@ -531,7 +536,7 @@ fn intersect_aabb(ray: Ray, min_corner: vec3f, max_corner: vec3f) -> bool {
   let t_entry_max = max(max(t_entry.x, t_entry.y), t_entry.z);
   let t_exit_min = min(min(t_exit.x, t_exit.y), t_exit.z);
 
-  return t_entry_max <= t_exit_min;
+  return t_entry_max <= t_exit_min && t_exit_min >= 0;
 }
 
 fn intersect_triangle(
@@ -580,36 +585,59 @@ fn intersect_triangle(
 fn ray_trace(
   ray: Ray, 
   max_distance: f32, // ignore intersections found further away
-  any_hit: bool,     // return as soon as an intersection is found if true
+  any_hit: bool, // return as soon as an intersection is found if true
   hit: ptr<function, Hit> // filled only if an intersection is found and any_hit is false
 ) -> bool {
   var intersection_found = false;
-  let num_meshes = u32(scene.num_meshes);
+  var stack: array<u32, 32>;
+  var stack_ptr = 0u;
 
-  for (var mesh_idx = 0u; mesh_idx < num_meshes; mesh_idx++) {
-    let mesh = meshes[mesh_idx];
+  stack[stack_ptr] = 0u;
+  stack_ptr++;
 
-    return intersect_aabb(ray, bvh_nodes[0].min_corner, bvh_nodes[0].max_corner);
+  while(stack_ptr > 0u) {
+    if (stack_ptr >= 31u) { break; }
 
-    for (var tri_index = 0u; tri_index < mesh.num_triangles; tri_index++) {
-      let triangle = get_triangle(mesh.tri_offset + tri_index);
-      
-      var tri_hit: Hit;
-      tri_hit.mesh_idx = mesh_idx;
-      tri_hit.tri_index = tri_index;
-      
-      let p0 = get_vert_pos(mesh.pos_offset + triangle.x);
-      let p1 = get_vert_pos(mesh.pos_offset + triangle.y);
-      let p2 = get_vert_pos(mesh.pos_offset + triangle.z);
-      
-      if (intersect_triangle(ray, p0, p1, p2, true, 0.0, max_distance, &tri_hit) == true) {
-        if (!intersection_found || (intersection_found && tri_hit.t < (*hit).t)) {
-          if (any_hit == true) {
-            return true;
+    stack_ptr--;
+
+    let node = bvh_nodes[stack[stack_ptr]];
+    if (!intersect_aabb(ray, node.min_corner, node.max_corner)) {
+      continue;
+    }
+
+    // intersected aabb of bvh node. either internal or leaf
+    if (node.num_primitives == 0) {
+      // internal node
+      stack[stack_ptr] = node.left_first;
+      stack_ptr++;
+
+      stack[stack_ptr] = node.left_first + 1;
+      stack_ptr++;
+    } else {
+      // leaf node
+      for (var i = 0u; i < node.num_primitives; i++) {
+        let tri_idx = node.left_first + i;
+
+        let tri_info = get_bvh_triangle(tri_idx);
+        let mesh_off = meshes[tri_info.w].pos_offset;
+        
+        var tri_hit: Hit;
+        tri_hit.tri_idx = tri_idx;
+        tri_hit.mesh_idx = tri_info.w;
+        
+        let p0 = get_vert_pos(mesh_off + tri_info.x);
+        let p1 = get_vert_pos(mesh_off + tri_info.y);
+        let p2 = get_vert_pos(mesh_off + tri_info.z);
+        
+        if (intersect_triangle(ray, p0, p1, p2, true, 0.0, max_distance, &tri_hit) == true) {
+          if (!intersection_found || (intersection_found && tri_hit.t < (*hit).t)) {
+            if (any_hit == true) {
+              return true;
+            }
+
+            *hit = tri_hit;
+            intersection_found = true;
           }
-
-          *hit = tri_hit;
-          intersection_found = true;
         }
       }
     }
@@ -621,7 +649,7 @@ fn ray_trace(
 fn shade_rt(hit: Hit) -> vec4f {
   let cam = scene.camera;
   let mesh = meshes[hit.mesh_idx];
-  let tri = get_triangle(mesh.tri_offset + hit.tri_index);
+  let tri = get_bvh_triangle(hit.tri_idx);
   let uvw = vec3f(hit.u, hit.v, 1.0 - hit.u - hit.v);
 
   let position = interpolate(
@@ -701,8 +729,7 @@ fn ray_fragment_main(input: RayFragmentInput) -> @location(0) vec4f {
   var hit: Hit;
 
   if (ray_trace(ray, MAX_DISTANCE, false, &hit) == true) {
-    // color_response = shade_rt(hit);
-    color_response = vec4f(1.0, 0.0, 0.0, 1.0);
+    color_response = shade_rt(hit);
   }
 
   return color_response;

@@ -1,5 +1,5 @@
 import { vec3, type Vec3 } from "wgpu-matrix";
-import type { Mesh } from "./mesh";
+import type { MergedGeometry } from "./mesh";
 
 const MIN_VALUE = -1e30;
 const MAX_VALUE = 1e30;
@@ -24,7 +24,7 @@ export class AABB {
   }
 
   largestAxis(): number {
-    const diag = vec3.sub(this.minCorner, this.maxCorner);
+    const diag = vec3.sub(this.maxCorner, this.minCorner);
 
     let largest = 0;
     if (diag[1] > diag[largest]) largest = 1;
@@ -54,13 +54,15 @@ export class AABB {
 
 class BVHPrimitive {
   index: number; // index in triangle indices array
+  meshIdx: number;
   v0: Vec3;
   v1: Vec3;
   v2: Vec3;
   centroid: Vec3;
 
-  constructor(index: number, v0: Vec3, v1: Vec3, v2: Vec3) {
+  constructor(index: number, meshIdx: number, v0: Vec3, v1: Vec3, v2: Vec3) {
     this.index = index;
+    this.meshIdx = meshIdx;
     this.v0 = v0;
     this.v1 = v1;
     this.v2 = v2;
@@ -97,29 +99,30 @@ export class BVHTree {
   size: number;
 
   indices: Uint32Array;
-  vertices: Float32Array;
   primitives: BVHPrimitive[];
 
-  constructor(mesh: Mesh) {
+  constructor(mesh: MergedGeometry) {
     this.size = 0;
     this.indices = mesh.indices;
-    this.vertices = mesh.positions;
 
     const numTris = mesh.indices.length / 3;
     this.primitives = new Array(numTris);
     this.nodes = new Array(2 * numTris - 1);
 
     for (let i = 0; i < numTris; ++i) {
+      const meshIdx = mesh.primitiveMeshIndices[i];
       const baseIdx = 3 * i;
-      const i0 = mesh.indices[baseIdx] * 3;
-      const i1 = mesh.indices[baseIdx + 1] * 3;
-      const i2 = mesh.indices[baseIdx + 2] * 3;
+      const vertexOffset = mesh.instances[meshIdx * 4]; // mesh vertex offset
+
+      const i0 = (mesh.indices[baseIdx] + vertexOffset) * 3;
+      const i1 = (mesh.indices[baseIdx + 1] + vertexOffset) * 3;
+      const i2 = (mesh.indices[baseIdx + 2] + vertexOffset) * 3;
 
       const v0 = vec3.create(mesh.positions[i0], mesh.positions[i0 + 1], mesh.positions[i0 + 2]);
       const v1 = vec3.create(mesh.positions[i1], mesh.positions[i1 + 1], mesh.positions[i1 + 2]);
       const v2 = vec3.create(mesh.positions[i2], mesh.positions[i2 + 1], mesh.positions[i2 + 2]);
 
-      this.primitives[i] = new BVHPrimitive(baseIdx, v0, v1, v2);
+      this.primitives[i] = new BVHPrimitive(baseIdx, meshIdx, v0, v1, v2);
     }
 
     this.createLeaf(numTris, 0);
@@ -221,13 +224,14 @@ export class BVHTree {
   }
 
   exportSortedIndices(): Uint32Array<ArrayBuffer> {
-    const sorted = new Uint32Array(this.primitives.length * 3);
+    const sorted = new Uint32Array(this.primitives.length * 4);
 
     for (let i = 0; i < this.primitives.length; ++i) {
       const originalBase = this.primitives[i].index;
-      sorted[3 * i] = this.indices[originalBase];
-      sorted[3 * i + 1] = this.indices[originalBase + 1];
-      sorted[3 * i + 2] = this.indices[originalBase + 2];
+      sorted[4 * i] = this.indices[originalBase];
+      sorted[4 * i + 1] = this.indices[originalBase + 1];
+      sorted[4 * i + 2] = this.indices[originalBase + 2];
+      sorted[4 * i + 3] = this.primitives[i].meshIdx;
     }
     
     return sorted;

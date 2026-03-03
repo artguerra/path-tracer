@@ -110,7 +110,7 @@ export class Scene {
     this.time += 1.0;
     const angle = this.time / 40.0;
     
-    this.lights[this.lights.length - 1].position = vec3.create(0.5 * Math.cos (angle), 0.9, 0.5 * Math.sin (angle));
+    this.lights[this.lights.length - 1].position = vec3.create(0.4 * Math.cos(angle), 0.9, 0.4 * Math.sin(angle));
   }
 
   updateMaterials(app: GPUApp) {

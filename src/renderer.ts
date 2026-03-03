@@ -198,10 +198,10 @@ export function render(app: GPUApp, scene: Scene, bindGroup: GPUBindGroup, useRa
     }
   }
 
-  if (scene.bvh) {
-    pass.setPipeline(app.wireframePipeline);
-    pass.draw(24, scene.bvh!.size, 0, 0);
-  }
+  // if (scene.bvh) {
+  //   pass.setPipeline(app.wireframePipeline);
+  //   pass.draw(24, scene.bvh!.size, 0, 0);
+  // }
   
   pass.end();
 

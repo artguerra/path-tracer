@@ -16,43 +16,45 @@ export interface MergedGeometry {
   normals: Float32Array<ArrayBuffer>;
   indices: Uint32Array<ArrayBuffer>;
   instances: Uint32Array<ArrayBuffer>; // packed data for WGSL: array<Mesh>
+  primitiveMeshIndices: Uint32Array<ArrayBuffer>;
 }
 
 export function mergeMeshes(meshInstances: MeshInstance[]): MergedGeometry {
   const numVertices = meshInstances.reduce((acc, cur) => acc + cur.mesh.positions.length, 0);
   const numIndices = meshInstances.reduce((acc, cur) => acc + cur.mesh.indices.length, 0);
+  const numTris = numIndices / 3;
 
   const merged: MergedGeometry = {
     positions: new Float32Array(numVertices),
     normals: new Float32Array(numVertices),
     indices: new Uint32Array(numIndices),
     instances: new Uint32Array(meshInstances.length * 4), // 4 u32s per instance
+    primitiveMeshIndices: new Uint32Array(numTris),
   };
 
   let posOffset = 0;
   let idxOffset = 0;
+  let triOffset = 0;
 
   for (let i = 0; i < meshInstances.length; ++i) {
     const { mesh, materialIndex } = meshInstances[i];
+    const triCount = mesh.indices.length / 3;
 
     merged.positions.set(mesh.positions, posOffset);
     merged.normals.set(mesh.normals, posOffset);
-
+    merged.indices.set(mesh.indices, idxOffset);
+    merged.primitiveMeshIndices.fill(i, triOffset, triOffset + triCount);
 
     const vertexOffset = posOffset / 3;
-    merged.indices.set(mesh.indices, idxOffset);
-    // for (let j = 0; j < mesh.indices.length; j++) {
-    //   merged.indices[idxOffset + j] = mesh.indices[j] + vertexOffset;
-    // }
-
     const instanceIdx = i * 4;
     merged.instances[instanceIdx + 0] = vertexOffset; // posOffset
-    merged.instances[instanceIdx + 1] = idxOffset / 3; // triOffset
-    merged.instances[instanceIdx + 2] = mesh.indices.length / 3; // numOfTriangles
+    merged.instances[instanceIdx + 1] = triOffset; // triOffset
+    merged.instances[instanceIdx + 2] = triCount; // numOfTriangles
     merged.instances[instanceIdx + 3] = materialIndex; // materialIndex
 
     posOffset += mesh.positions.length;
     idxOffset += mesh.indices.length;
+    triOffset += triCount;
   }
 
   return merged;
