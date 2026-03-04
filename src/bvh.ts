@@ -23,6 +23,12 @@ export class AABB {
     this.maxCorner = vec3.max(this.maxCorner, point);
   }
 
+  growToPrimitive(prim: BVHPrimitive) {
+    this.grow(prim.v0);
+    this.grow(prim.v1);
+    this.grow(prim.v2);
+  }
+
   area(): number {
     const diag = vec3.sub(this.maxCorner, this.minCorner);
     return diag[0] * diag[1] + diag[1] * diag[2] + diag[2] * diag[0];
@@ -55,6 +61,11 @@ export class AABB {
 
     return new AABB(min, max);
   }
+}
+
+interface SAHBin {
+  bounds: AABB;
+  numPrimitives: number;
 }
 
 class BVHPrimitive {
@@ -101,6 +112,7 @@ class BVHNode {
 type BVHHeuristic = "MIDPOINT" | "SAH";
 
 export class BVHTree {
+  readonly N_BINS: number = 10;
   readonly rootIdx: number = 0;
   heuristic: BVHHeuristic;
   nodes: BVHNode[];
@@ -141,28 +153,17 @@ export class BVHTree {
 
   buildRecursive(nodeIdx: number) {
     const node = this.nodes[nodeIdx];
-    if (this.heuristic === "MIDPOINT" && node.numPrimitives! <= 2) return;
+    if (node.numPrimitives! <= 2) return;
 
     let splitAxis = 0;
     let split = 0;
     if (this.heuristic === "SAH") {
-      let minCost = MAX_VALUE;
-      for (let axis = 0; axis < 3; ++axis) {
-        for (let i = 0; i < node.numPrimitives!; ++i) {
-          const tri = node.firstPrimitiveOffset! + i;
-          const centroid = this.primitives[tri].centroid;
-          const cost = this.evalSAH(nodeIdx, centroid, axis);
+      const [axis, sp, cost] = this.findBestSplit(nodeIdx);
+      splitAxis = axis;
+      split = sp;
 
-          if (cost < minCost) {
-            minCost = cost;
-            splitAxis = axis;
-            split = centroid[axis];
-          }
-        }
-      }
-
-      const parentCost = node.numPrimitives! * node.bounds!.area();
-      if (minCost >= parentCost) return;
+      const noSplitCost = node.numPrimitives! * node.bounds!.area();
+      if (cost >= noSplitCost) return;
     } else if (this.heuristic === "MIDPOINT") {
       splitAxis = node.bounds!.largestAxis();
       split = vec3.midpoint(node.bounds!.minCorner, node.bounds!.maxCorner)[splitAxis];
@@ -213,31 +214,79 @@ export class BVHTree {
     this.buildRecursive(right);
   }
 
-  private evalSAH(nodeIdx: number, centroid: Vec3, axis: number): number {
+  private findBestSplit(nodeIdx: number): [number, number, number] {
     const node = this.nodes[nodeIdx];
-    const thresh = centroid[axis];
-    const leftBox = new AABB(), rightBox = new AABB();
+    let splitAxis = -1, split = -1, minCost = MAX_VALUE;
 
-    let leftCount = 0, rightCount = 0;
-    for (let i = 0; i < node.numPrimitives!; ++i) {
-      const tri = node.firstPrimitiveOffset! + i;
-      const prim = this.primitives[tri];
+    for (let axis = 0; axis < 3; ++axis) {
+      let minBound = MAX_VALUE, maxBound = MIN_VALUE;
 
-      if (prim.centroid[axis] <= thresh) {
-        leftCount++;
-        leftBox.grow(prim.v0);
-        leftBox.grow(prim.v1);
-        leftBox.grow(prim.v2);
-      } else {
-        rightCount++;
-        rightBox.grow(prim.v0);
-        rightBox.grow(prim.v1);
-        rightBox.grow(prim.v2);
+      // define start and end bound of the bins
+      for (let i = 0; i < node.numPrimitives!; ++i) {
+        const tri = node.firstPrimitiveOffset! + i;
+        const c = this.primitives[tri].centroid[axis];
+
+        minBound = Math.min(minBound, c);
+        maxBound = Math.max(maxBound, c);
+      }
+
+      if (minBound === maxBound) continue;
+
+      // fill bins with primitives
+      const bins: SAHBin[] = Array.from({ length: this.N_BINS }, () => {
+        return { bounds: new AABB(), numPrimitives: 0 };
+      });
+
+      let step = this.N_BINS / (maxBound - minBound);
+      for (let i = 0; i < node.numPrimitives!; ++i) {
+        const tri = node.firstPrimitiveOffset! + i;
+        const prim = this.primitives[tri];
+
+        let binIdx = Math.trunc((prim.centroid[axis] - minBound) * step);
+        binIdx = Math.min(binIdx, this.N_BINS - 1);
+
+        bins[binIdx].numPrimitives++;
+        bins[binIdx].bounds.growToPrimitive(prim);
+      }
+
+      // cumulative sum of areas and primitive counts
+      const areaLeft: number[] = new Array(this.N_BINS), areaRight: number[] = new Array(this.N_BINS);
+      const numLeft: number[] = new Array(this.N_BINS), numRight: number[] = new Array(this.N_BINS);
+      let sumLeft = 0, sumRight = 0;
+      const leftBox = new AABB(), rightBox = new AABB();
+      for (let i = 0; i < this.N_BINS - 1; ++i) {
+        sumLeft += bins[i].numPrimitives;
+        sumRight += bins[this.N_BINS - 1 - i].numPrimitives;
+
+        numLeft[i] = sumLeft;
+        numRight[this.N_BINS - 2 - i] = sumRight;
+
+        if (bins[i].numPrimitives > 0) {
+          leftBox.grow(bins[i].bounds.minCorner);
+          leftBox.grow(bins[i].bounds.maxCorner);
+        }
+        
+        if (bins[this.N_BINS - 1 - i].numPrimitives > 0) {
+          rightBox.grow(bins[this.N_BINS - 1 - i].bounds.minCorner);
+          rightBox.grow(bins[this.N_BINS - 1 - i].bounds.maxCorner);
+        }
+
+        areaLeft[i] = leftBox.area();
+        areaRight[this.N_BINS - 2 - i] = rightBox.area();
+      }
+
+      step = (maxBound - minBound) / this.N_BINS;
+      for (let i = 0; i < this.N_BINS - 1; ++i) {
+        const cost = numLeft[i] * areaLeft[i] + numRight[i] * areaRight[i];
+        if (cost < minCost) {
+          minCost = cost;
+          splitAxis = axis;
+          split = minBound + step * (i + 1);
+        }
       }
     }
 
-    const cost = leftCount * leftBox.area() + rightCount * rightBox.area();
-    return (cost > 0) ? cost : MAX_VALUE;
+    return [splitAxis, split, minCost];
   }
 
   private updateBounds(nodeId: number) {
