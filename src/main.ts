@@ -3,7 +3,7 @@ import { vec3, type Vec3 } from "wgpu-matrix";
 import { Camera } from "./camera";
 import { type GPUApp, initWebGPU, initRenderPipeline, createSceneBindGroup, render } from "./renderer";
 import { Scene } from "./scene";
-import { type MeshInstance, createQuad, createSphere } from "./mesh";
+import { type MeshInstance, createBox, createQuad, createSphere } from "./mesh";
 import type { Material, LightSource } from "./types";
 
 const ui = {
@@ -98,14 +98,12 @@ async function main() {
     { albedo: vec3.create(1.0, 1.0, 1.0), roughness: 1.0, metalness: 0.0, useProceduralTexture: false }, // white wall
     { albedo: vec3.create(1.0, 0.0, 0.0), roughness: 1.0, metalness: 0.0, useProceduralTexture: false }, // red wall
     { albedo: vec3.create(0.0, 1.0, 0.0), roughness: 1.0, metalness: 0.0, useProceduralTexture: false }, // green wall
-    { albedo: hexToSRGB(ui.albedoPicker.value), roughness: 0.55, metalness: 1.0, useProceduralTexture: true } // main object material
+    { albedo: hexToSRGB(ui.albedoPicker.value), roughness: 0.3, metalness: 0.7, useProceduralTexture: true } // main object material
   ];
 
   const lights: LightSource[] = [
-    { position: vec3.create(-0.75*s, 1.5*s, 1.5*s), intensity: 1.5, color: vec3.create(1.0, 1.0, 1.0), angle, spot, rayTracedShadows: 1 },
-    { position: vec3.create(0.75*s, 0.5*s, 1.5*s), intensity: 2.5, color: vec3.create(1.0, 1.0, 1.0), angle, spot, rayTracedShadows: 1 },
-    { position: vec3.create(-0.75*s, 0.5*s, -0.75*s), intensity: 0.8, color: vec3.create(1.0, 1.0, 1.0), angle, spot, rayTracedShadows: 1 },
-    { position: vec3.create(1.8*s, 1.8*s, 1.8*s), intensity: 0.8, color: vec3.create(1.0, 1.0, 1.0), angle, spot, rayTracedShadows: 1 },
+    { position: vec3.create(-0.75*s, 1.5*s, 1.5*s), intensity: 1.5, color: vec3.create(1.0, 0.92, 0.56), angle, spot, rayTracedShadows: 1 },
+    { position: vec3.create(0.0, 1.9*s, 0.0), intensity: 1.5, color: vec3.create(1.0, 0.92, 0.56), angle: 0, spot, rayTracedShadows: 1 },
   ];
 
   const instances: MeshInstance[] = [
@@ -114,7 +112,9 @@ async function main() {
     { mesh: createQuad([-s, 0.0, -s], [2.0*s, 0.0, 0.0], [0.0, 2.0*s, 0.0]), materialIndex: 0 }, // back wall
     { mesh: createQuad([-s, 0.0, -s], [0.0, 2.0*s, 0.0], [0.0, 0.0, 2.0*s]), materialIndex: 1 }, // left wall
     { mesh: createQuad([s, 0.0, -s], [0.0, 0.0, 2.0*s], [0.0, 2.0*s, 0.0]), materialIndex: 2 },  // right wall
-    { mesh: createSphere([0.0, 0.5, 0.0], 0.2, 32, 32), materialIndex: 3 },
+    // { mesh: createSphere([0.0, s, 0.0], 0.2, 32, 32), materialIndex: 3 },
+    { mesh: createBox([-0.15, 0.0, -0.35], s * 0.6, 1.15 * s, s * 0.6, Math.PI / 3), materialIndex: 0 },
+    { mesh: createBox([0.1, 0.0, 0.05], s * 0.6, 0.6 * s, s * 0.6, Math.PI / 9), materialIndex: 0 },
   ];
 
   const scene = new Scene(camera, instances, materials, lights);

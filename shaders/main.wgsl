@@ -689,14 +689,14 @@ fn shade_rt(hit: Hit) -> vec4f {
     uvw
   );
 
-  var normal = normalize(interpolate(
+  let world_normal = normalize(interpolate(
     get_vert_normal(mesh.pos_offset + tri.x), 
     get_vert_normal(mesh.pos_offset + tri.y), 
     get_vert_normal(mesh.pos_offset + tri.z), 
     uvw
   ));
 
-  normal = (cam.trans_inv_view_mat * vec4f(normal, 1.0)).xyz;
+  let view_normal = normalize((cam.trans_inv_view_mat * vec4f(world_normal, 1.0)).xyz);
 
   var color_response = vec3f(0.0);
   let view_position = (cam.view_mat * cam.model_mat * vec4f(position, 1.0)).xyz;
@@ -714,16 +714,16 @@ fn shade_rt(hit: Hit) -> vec4f {
       let light_dist = length(pos_to_light);
 
       shadow_ray.direction = normalize(pos_to_light);
-      shadow_ray.origin = position + SHADOW_BIAS * normal;
+      shadow_ray.origin = position + SHADOW_BIAS * world_normal;
 
       var shadow_hit: Hit;
       let in_shadow = ray_trace(shadow_ray, light_dist + EPSILON, true, &shadow_hit); // any hit
 
       if (in_shadow == false || (in_shadow == true && shadow_hit.t > light_dist)) {
-        color_response += light_shade(view_position, normal, mesh.material_idx, light_source_idx, wo); 
+        color_response += light_shade(view_position, view_normal, mesh.material_idx, light_source_idx, wo); 
       }
     } else {
-      color_response += light_shade(view_position, normal, mesh.material_idx, light_source_idx, wo);
+      color_response += light_shade(view_position, view_normal, mesh.material_idx, light_source_idx, wo);
     }
   }
 
