@@ -121,68 +121,70 @@ export function createQuad(origin: number[], edge0: number[], edge1: number[]): 
 export function createBox(
   origin: number[], width: number, height: number, length: number, angle: number = 0.0
 ): Mesh {
-  const w = width / 2.0;
-  const h = height / 2.0;
-  const l = length / 2.0;
-  const positions = [
-    0.0, 0.0,  2*l,
-    2*w, 0.0,  2*l,
-    2*w,  2*h,  2*l,
-    0.0,  2*h,  2*l,
-    0.0, 0.0, 0.0,
-    2*w, 0.0, 0.0,
-    2*w,  2*h, 0.0,
-    0.0,  2*h, 0.0,
+  const positions: number[] = [];
+  const normals: number[] = [];
+  const indices: number[] = [];
+
+  const w = width;
+  const h = height;
+  const l = length;
+
+  const c = [
+    [0, 0, l], [w, 0, l], [w, h, l], [0, h, l], // front
+    [0, 0, 0], [w, 0, 0], [w, h, 0], [0, h, 0]  // back
   ];
 
-  const den = vec3.length([w, h, l]);
-  const wn = w / den;
-  const hn = h / den;
-  const ln = l / den;
+  const faceCorners = [
+    [0, 1, 2, 3], // front
+    [1, 5, 6, 2], // right
+    [5, 4, 7, 6], // back
+    [4, 0, 3, 7], // left
+    [3, 2, 6, 7], // top
+    [4, 5, 1, 0]  // bottom
+  ];
 
-  const normals = [
-    -wn, -hn,  ln,
-    wn, -hn,  ln,
-    wn,  hn,  ln,
-    -wn,  hn,  ln,
-    -wn, -hn, -ln,
-    wn, -hn, -ln,
-    wn,  hn, -ln,
-    -wn,  hn, -ln,
+  // flat normals for each face
+  const faceNormals = [
+    [0, 0, 1],
+    [1, 0, 0],
+    [0, 0, -1],
+    [-1, 0, 0],
+    [0, 1, 0],
+    [0, -1, 0]
   ];
 
   const sinTheta = Math.sin(angle);
   const cosTheta = Math.cos(angle);
+  let vOffset = 0;
 
-  for (let i = 0; i < positions.length; i += 3) {
-    const x = positions[i];
-    const y = positions[i + 1];
-    const z = positions[i + 2];
+  for (let f = 0; f < 6; f++) {
+    const corners = faceCorners[f];
+    const n = faceNormals[f];
 
-    const rx = x * cosTheta - z * sinTheta;
-    const ry = y;
-    const rz = x * sinTheta + z * cosTheta;
+    const nx = n[0] * cosTheta - n[2] * sinTheta;
+    const ny = n[1];
+    const nz = n[0] * sinTheta + n[2] * cosTheta;
 
-    positions[i] = rx + origin[0];
-    positions[i + 1] = ry + origin[1];
-    positions[i + 2] = rz + origin[2];
+    for (let i = 0; i < 4; i++) {
+      const corner = c[corners[i]];
+      const x = corner[0];
+      const y = corner[1];
+      const z = corner[2];
+
+      const rx = x * cosTheta - z * sinTheta;
+      const ry = y;
+      const rz = x * sinTheta + z * cosTheta;
+
+      positions.push(rx + origin[0], ry + origin[1], rz + origin[2]);
+      normals.push(nx, ny, nz);
+    }
+
+    indices.push(
+      vOffset + 0, vOffset + 1, vOffset + 2,
+      vOffset + 0, vOffset + 2, vOffset + 3
+    );
+    vOffset += 4;
   }
-
-  for (let i = 0; i < normals.length; i += 3) {
-    const nx = normals[i];
-    const ny = normals[i + 1];
-    const nz = normals[i + 2];
-
-    normals[i] = nx * cosTheta - nz * sinTheta;
-    normals[i + 1] = ny;
-    normals[i + 2] = nx * sinTheta + nz * cosTheta;
-  }
-
-  const indices = [
-    0, 1, 2,  0, 2, 3,  1, 5, 6,  1, 6, 2,
-    5, 4, 7,  5, 7, 6,  4, 0, 3,  4, 3, 7,
-    3, 2, 6,  3, 6, 7,  4, 5, 1,  4, 1, 0,
-  ];
 
   return {
     positions: new Float32Array(positions),

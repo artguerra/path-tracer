@@ -391,16 +391,16 @@ fn light_shade(
   let ir = light.color * light.intensity * att;
   var m = materials[material_idx];
 
-  if (material_idx == 3) {
-    let world_pos = (cam.inv_view_mat * vec4f(position, 1.0)).xyz;
-    let noise = fbm_perlin_noise_3d(world_pos, 12u, 10.0, 1.0);
-    let t = 0.5 + 0.5 * noise;
+  // if (material_idx == 3) {
+  //   let world_pos = (cam.inv_view_mat * vec4f(position, 1.0)).xyz;
+  //   let noise = fbm_perlin_noise_3d(world_pos, 12u, 10.0, 1.0);
+  //   let t = 0.5 + 0.5 * noise;
 
-    let decayed_albedo = m.albedo * 0.6;
-    m.albedo = mix(m.albedo, decayed_albedo, t);
-    m.roughness = mix(m.roughness, min(m.roughness + 0.2, 1), t);
-    m.metalness = mix(m.metalness, max(m.metalness - 0.2, 0), t);
-  }
+  //   let decayed_albedo = m.albedo * 0.6;
+  //   m.albedo = mix(m.albedo, decayed_albedo, t);
+  //   m.roughness = mix(m.roughness, min(m.roughness + 0.2, 1), t);
+  //   m.metalness = mix(m.metalness, max(m.metalness - 0.2, 0), t);
+  // }
 
   let fr = brdf(wi, wo, normal, m.albedo, m.roughness, m.metalness);
   let color_response = ir * fr * max(0.0, dot(wi, normal));
@@ -801,7 +801,7 @@ fn ray_vertex_main(input: RayVertexInput) -> RayVertexOutput {
   return output;
 }
 
-const STRATIFIED_GRID_N = 2u;
+const STRATIFIED_GRID_N = 4u;
 const SPP: u32 = STRATIFIED_GRID_N * STRATIFIED_GRID_N;
 const MAX_DEPTH: u32 = 3u;
 
@@ -834,19 +834,11 @@ fn ray_fragment_main(input: RayFragmentInput) -> @location(0) vec4f {
       if (ray_trace(ray, MAX_DISTANCE, false, &hit) == true) {
         sample_color += shade_rt(hit).xyz * throughput;
 
-        let u = rand(&rng);
-        let v = rand(&rng);
-        let phi = acos(1 - u);
-        let theta = 2.0 * PI * v;
-
         var position: vec3f;
         var world_normal: vec3f;
         get_hit_vectors(hit, &position, &world_normal);
 
-        let sin_theta = sin(theta);
-        let local_x = sin_theta * cos(phi);
-        let local_y = sin_theta * sin(phi);
-        let local_z = cos(theta);
+        // hemisphere ref frame
         var helper = vec3f(1.0, 0.0, 0.0);
         if (abs(world_normal.x) > 0.999) {
           helper = vec3f(0.0, 1.0, 0.0);
@@ -854,22 +846,26 @@ fn ray_fragment_main(input: RayFragmentInput) -> @location(0) vec4f {
         let tangent = normalize(cross(helper, world_normal));
         let bitangent = cross(world_normal, tangent);
 
-        const BOUNCE_RAY_BIAS = 0.0001;
-        let bounce_dir = normalize(local_x * tangent + local_z * world_normal + local_y * bitangent);
-        ray.origin = position + BOUNCE_RAY_BIAS * world_normal;
-        ray.direction = bounce_dir;
-
         let mesh = meshes[hit.mesh_idx];
         let albedo = materials[mesh.material_idx].albedo; 
         
-        let cos_theta = max(0.0, dot(world_normal, bounce_dir));
-        throughput *= albedo * cos_theta * 2.0;
+        let u = rand(&rng);
+        let v = rand(&rng);
+        let sqrt_v = sqrt(v);
+        let cosine_pdf = vec3f(cos(2.0 * PI * u) * sqrt_v, sin(2.0 * PI * u) * sqrt_v, sqrt(1 - v));
+
+        const BOUNCE_RAY_BIAS = 0.0001;
+        let bounce_dir = normalize(cosine_pdf.x * tangent + cosine_pdf.z * world_normal + cosine_pdf.y * bitangent);
+        ray.origin = position + BOUNCE_RAY_BIAS * world_normal;
+        ray.direction = bounce_dir;
+
+        throughput *= albedo;
 
         // russian roulette
         // only apply after 3rd bounce
         if (depth > 2u) {
           var p = max(throughput.x, max(throughput.y, throughput.z));
-          p = min(1.0, p); 
+          p = clamp(p, 0.05, 1.0); 
             
           if (rand(&rng) > p) {
             break;
