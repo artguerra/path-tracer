@@ -52,6 +52,8 @@ struct Scene {
   canvas_height: f32,
   num_meshes: f32,
   num_lights: f32,
+  _pad: vec3f,
+  rng_seed: f32,
 }
 
 @group(0) @binding(0)
@@ -111,7 +113,46 @@ fn attenuation(dist: f32, cone_decay: f32) -> f32 {
   return cone_decay * (1.0 / sqr(dist));
 }
 
-// ----------------------------- noise functions ----------------------------- 
+// -------------------------------------------- RNGs --------------------------------------------
+
+// based on "Efficient pseudo-random number generation for monte-carlo simulations using graphic processors" (Mohanty et al.)
+struct RngState {
+  z1: u32,
+  z2: u32,
+  z3: u32,
+  z4: u32,
+}
+
+fn taus_step(z: u32, s1: u32, s2: u32, s3: u32, M: u32) -> u32 {
+  let b = (((z << s1) ^ z) >> s2);
+  return (((z & M) << s3) ^ b);
+}
+
+fn init_rng(seed_in: u32) -> RngState {
+  var state: RngState;
+
+  // pcg integer hash to not have that much spatial correlation
+  var pcg_state = seed_in * 747796405u + 2891336453u;
+  var word = ((pcg_state >> ((pcg_state >> 28u) + 4u)) ^ pcg_state) * 277803737u;
+  let seed = (word >> 22u) ^ word;
+
+  state.z1 = taus_step(seed, 13u, 19u, 12u, 4294967294u);
+  state.z2 = taus_step(seed, 2u, 25u, 4u, 4294967288u);
+  state.z3 = taus_step(seed, 3u, 11u, 17u, 4294967280u);
+  state.z4 = (1664525u * seed + 1013904223u);
+
+  return state;
+}
+
+fn rand(state: ptr<function, RngState>) -> f32 {
+  (*state).z1 = taus_step((*state).z1, 13u, 19u, 12u, 4294967294u);
+  (*state).z2 = taus_step((*state).z2, 2u, 25u, 4u, 4294967288u);
+  (*state).z3 = taus_step((*state).z3, 3u, 11u, 17u, 4294967280u);
+  (*state).z4 = (1664525u * (*state).z4 + 1013904223u);
+
+  let r = (*state).z1 ^ (*state).z2 ^ (*state).z3 ^ (*state).z4;
+  return f32(r) * 2.3283064365387e-10;
+}
 
 // from https://www.shadertoy.com/view/4djSRW
 fn rand_dir_2d(p: vec2f) -> vec2f {
@@ -127,6 +168,8 @@ fn rand_dir_3d(p: vec3f) -> vec3f {
 
   return -1.0 + 2.0 * fract((p3.xxy + p3.yxx) * p3.zyx);
 }
+
+// ----------------------------- noise functions ----------------------------- 
 
 fn gradient_eval(corner: vec2f, p: vec2f) -> f32 {
   let dist = p - corner;
@@ -520,7 +563,7 @@ fn ray_at(uv: vec2f, camera: Camera) -> Ray {
   let w = 2.0 * tan(0.5 * camera.fov); 
 
   ray.origin = eye;
-  ray.direction = normalize(view_dir + ((uv.x - 0.5) * camera.aspect_ratio * w) * view_right + ((uv.y) - 0.5) * w * view_up);  
+  ray.direction = normalize(view_dir + ((uv.x - 0.5) * camera.aspect_ratio * w) * view_right + (uv.y - 0.5) * w * view_up);
 
   return ray;
 }
@@ -676,25 +719,35 @@ fn ray_trace(
   return intersection_found;
 }
 
-fn shade_rt(hit: Hit) -> vec4f {
-  let cam = scene.camera;
+fn get_hit_vectors(hit: Hit, hit_pos: ptr<function, vec3f>, hit_normal: ptr<function, vec3f>) {
   let mesh = meshes[hit.mesh_idx];
   let tri = get_bvh_triangle(hit.tri_idx);
   let uvw = vec3f(hit.u, hit.v, 1.0 - hit.u - hit.v);
 
-  let position = interpolate(
+  *hit_pos = interpolate(
     get_vert_pos(mesh.pos_offset + tri.x), 
     get_vert_pos(mesh.pos_offset + tri.y), 
     get_vert_pos(mesh.pos_offset + tri.z), 
     uvw
   );
 
-  let world_normal = normalize(interpolate(
+  *hit_normal = normalize(interpolate(
     get_vert_normal(mesh.pos_offset + tri.x), 
     get_vert_normal(mesh.pos_offset + tri.y), 
     get_vert_normal(mesh.pos_offset + tri.z), 
     uvw
   ));
+}
+
+fn shade_rt(hit: Hit) -> vec4f {
+  let cam = scene.camera;
+  let mesh = meshes[hit.mesh_idx];
+  let tri = get_bvh_triangle(hit.tri_idx);
+  let uvw = vec3f(hit.u, hit.v, 1.0 - hit.u - hit.v);
+
+  var position: vec3f;
+  var world_normal: vec3f;
+  get_hit_vectors(hit, &position, &world_normal);
 
   let view_normal = normalize((cam.trans_inv_view_mat * vec4f(world_normal, 1.0)).xyz);
 
@@ -748,17 +801,88 @@ fn ray_vertex_main(input: RayVertexInput) -> RayVertexOutput {
   return output;
 }
 
+const STRATIFIED_GRID_N = 2u;
+const SPP: u32 = STRATIFIED_GRID_N * STRATIFIED_GRID_N;
+const MAX_DEPTH: u32 = 3u;
+
 @fragment
 fn ray_fragment_main(input: RayFragmentInput) -> @location(0) vec4f {
-  let coord = vec2f(input.frag_pos.x / scene.canvas_width, 1.0 - input.frag_pos.y / scene.canvas_height);
-  let ray = ray_at(coord, scene.camera);
+  let pixel_idx = u32(input.frag_pos.x) + u32(input.frag_pos.y) * u32(scene.canvas_width);
+  var rng = init_rng(pixel_idx + u32(scene.rng_seed) * 719393u);
 
-  var color_response = vec4f(0.0, 0.0, 0.0, 1.0);
+  let grid_step = 1.0 / f32(STRATIFIED_GRID_N);
+
+  var total_color = vec3f(0.0, 0.0, 0.0);
   var hit: Hit;
 
-  if (ray_trace(ray, MAX_DISTANCE, false, &hit) == true) {
-    color_response = shade_rt(hit);
+  for (var sample = 0u; sample < SPP; sample++) {
+    let cell_x = sample % STRATIFIED_GRID_N;
+    let cell_y = sample / STRATIFIED_GRID_N;
+
+    let cell_start_x = f32(cell_x) * grid_step;
+    let cell_start_y = f32(cell_y) * grid_step;
+    let off_x = cell_start_x + rand(&rng) * grid_step;
+    let off_y = cell_start_y + rand(&rng) * grid_step;
+
+    let coord = vec2f((input.frag_pos.x + off_x) / scene.canvas_width, 1.0 - (input.frag_pos.y + off_y) / scene.canvas_height);
+    var ray = ray_at(coord, scene.camera);
+
+    var throughput = vec3f(1.0);
+    var sample_color = vec3f(0.0);
+
+    for (var depth = 0u; depth < MAX_DEPTH; depth++) {
+      if (ray_trace(ray, MAX_DISTANCE, false, &hit) == true) {
+        sample_color += shade_rt(hit).xyz * throughput;
+
+        let u = rand(&rng);
+        let v = rand(&rng);
+        let phi = acos(1 - u);
+        let theta = 2.0 * PI * v;
+
+        var position: vec3f;
+        var world_normal: vec3f;
+        get_hit_vectors(hit, &position, &world_normal);
+
+        let sin_theta = sin(theta);
+        let local_x = sin_theta * cos(phi);
+        let local_y = sin_theta * sin(phi);
+        let local_z = cos(theta);
+        var helper = vec3f(1.0, 0.0, 0.0);
+        if (abs(world_normal.x) > 0.999) {
+          helper = vec3f(0.0, 1.0, 0.0);
+        }
+        let tangent = normalize(cross(helper, world_normal));
+        let bitangent = cross(world_normal, tangent);
+
+        const BOUNCE_RAY_BIAS = 0.0001;
+        let bounce_dir = normalize(local_x * tangent + local_z * world_normal + local_y * bitangent);
+        ray.origin = position + BOUNCE_RAY_BIAS * world_normal;
+        ray.direction = bounce_dir;
+
+        let mesh = meshes[hit.mesh_idx];
+        let albedo = materials[mesh.material_idx].albedo; 
+        
+        let cos_theta = max(0.0, dot(world_normal, bounce_dir));
+        throughput *= albedo * cos_theta * 2.0;
+
+        // russian roulette
+        // only apply after 3rd bounce
+        if (depth > 2u) {
+          var p = max(throughput.x, max(throughput.y, throughput.z));
+          p = min(1.0, p); 
+            
+          if (rand(&rng) > p) {
+            break;
+          }
+          throughput /= p; 
+        }
+      } else {
+        break; // ray missed
+      }
+    }
+
+    total_color += sample_color;
   }
 
-  return color_response;
+  return vec4f(total_color / f32(SPP), 1.0);
 }

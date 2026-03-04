@@ -58,7 +58,7 @@ export class Scene {
     this.sortedIndicesBuffer = createGPUBuffer(app.device, this.bvh.exportSortedIndices(), storageUsage);
 
     this.uniformBuffer = app.device.createBuffer({
-      size: 88 * 4, // 88 floats in scene struct in shader
+      size: 92 * 4, // 92 floats in scene struct in shader
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
 
@@ -107,7 +107,7 @@ export class Scene {
   }
 
   animate() {
-    // this.time += 1.0;
+    this.time += 1.0;
     // const angle = this.time / 40.0;
     
     // this.lights[this.lights.length - 1].position = vec3.create(0.4 * Math.cos(angle), 0.9, 0.4 * Math.sin(angle));
@@ -132,7 +132,7 @@ export class Scene {
   updateGPU(app: GPUApp) {
     if (!this.buffersInitialized) return;
 
-    const sceneData = new Float32Array(88);
+    const sceneData = new Float32Array(92);
 
     // matrices
     sceneData.set(this.camera.modelMat, 0);
@@ -150,6 +150,7 @@ export class Scene {
     sceneData[85] = app.canvas.height;
     sceneData[86] = this.instances.length;
     sceneData[87] = this.lights.length;
+    sceneData[91] = this.time;
 
     app.device.queue.writeBuffer(this.uniformBuffer!, 0, sceneData);
 
