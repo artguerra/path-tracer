@@ -64,21 +64,22 @@ function initEvents(app: GPUApp, scene: Scene) {
   ui.canvas.addEventListener("contextmenu", e => e.preventDefault());
 
   ui.albedoPicker.addEventListener("input", () => {
-    scene.materials[scene.materials.length - 1].albedo = hexToSRGB(ui.albedoPicker.value);
+    scene.materials[3].albedo = hexToSRGB(ui.albedoPicker.value);
+    console.log(scene.materials[3].albedo)
     scene.updateMaterials(app);
   });
 
   ui.roughnessSlider.addEventListener("input", () => {
     const val = parseFloat(ui.roughnessSlider.value);
 
-    scene.materials[scene.materials.length - 1].roughness = val;
+    scene.materials[3].roughness = val;
     scene.updateMaterials(app);
   });
 
   ui.metalnessSlider.addEventListener("input", () => {
     const val = parseFloat(ui.metalnessSlider.value);
 
-    scene.materials[scene.materials.length - 1].metalness = val;
+    scene.materials[3].metalness = val;
     scene.updateMaterials(app);
   });
 }
@@ -92,10 +93,10 @@ async function main() {
   const camera = new Camera(vec3.create(0.0, s, 0.0), camAspect, 4.0 * s);
 
   const materials: Material[] = [
-    { albedo: vec3.create(0.9, 0.9, 0.9), roughness: 1.0, metalness: 0.0, useProceduralTexture: false }, // white wall
-    { albedo: vec3.create(0.9, 0.0, 0.0), roughness: 1.0, metalness: 0.0, useProceduralTexture: false }, // red wall
-    { albedo: vec3.create(0.0, 0.9, 0.0), roughness: 1.0, metalness: 0.0, useProceduralTexture: false }, // green wall
-    { albedo: hexToSRGB(ui.albedoPicker.value), roughness: 0.7, metalness: 0.3, useProceduralTexture: true } // main object material
+    { albedo: vec3.create(0.9, 0.9, 0.9), roughness: 1.0, metalness: 0.0, materialType: 0 }, // white wall
+    { albedo: vec3.create(0.9, 0.0, 0.0), roughness: 1.0, metalness: 0.0, materialType: 0 }, // red wall
+    { albedo: vec3.create(0.0, 0.9, 0.0), roughness: 1.0, metalness: 0.0, materialType: 0 }, // green wall
+    { albedo: hexToSRGB(ui.albedoPicker.value), roughness: 1.0, metalness: 0.0, materialType: 0 } // main object material
   ];
 
   const lights: LightSource[] = [
@@ -104,7 +105,7 @@ async function main() {
     {
       type: "area",
       position: vec3.create(-0.1, 0.99, -0.1),
-      intensity: 150,
+      intensity: 100,
       u: vec3.create(0.2, 0.0, 0.0),
       v: vec3.create(0.0, 0.0, 0.2),
       color: vec3.create(1.0, 1.0, 1.0),

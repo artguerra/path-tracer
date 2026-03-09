@@ -26,7 +26,7 @@ struct Material {
   albedo: vec3<f32>,
   roughness: f32,
   metalness: f32,
-  use_procedural_texture: u32,
+  material_type: u32,
   _pad: vec2<f32>,
 }
 
@@ -543,6 +543,11 @@ fn raster_fragment_main(input: RasterVertexOutput) -> @location(0) vec4f {
   let cam_world_pos = scene.camera.inv_view_mat[3].xyz;
   let wo = normalize(cam_world_pos - position);
 
+  let mat = materials[input.material_idx];
+  if (mat.material_type == 2u) {
+    return vec4f(mat.albedo, 1.0);
+  }
+
   let color_response = compute_radiance(position, normal, input.material_idx, wo);
 
   return vec4f(color_response, 1.0);
@@ -721,6 +726,10 @@ fn ray_trace(
 
         let tri_info = get_bvh_triangle(tri_idx);
         let mesh_off = meshes[tri_info.w].pos_offset;
+
+        if (any_hit == true && materials[meshes[tri_info.w].material_idx].material_type == 2u) {
+          continue; 
+        } 
         
         var tri_hit: Hit;
         tri_hit.tri_idx = tri_idx;
@@ -829,7 +838,7 @@ fn ray_vertex_main(input: RayVertexInput) -> RayVertexOutput {
   return output;
 }
 
-const STRATIFIED_GRID_N = 4u;
+const STRATIFIED_GRID_N = 16u;
 const SPP: u32 = STRATIFIED_GRID_N * STRATIFIED_GRID_N;
 const MAX_DEPTH: u32 = 3u;
 
@@ -862,6 +871,15 @@ fn ray_fragment_main(input: RayFragmentInput) -> @location(0) vec4f {
       if (ray_trace(ray, MAX_DISTANCE, false, &hit) == true) {
         sample_color += shade_rt(hit, ray.direction, &rng).xyz * throughput;
 
+        let mesh = meshes[hit.mesh_idx];
+        let mat = materials[mesh.material_idx];
+        if (mat.material_type == 2u) {
+            if (depth == 0u) {
+              sample_color += mat.albedo * throughput;
+            }
+            break; 
+        }
+
         var position: vec3f;
         var world_normal: vec3f;
         get_hit_vectors(hit, &position, &world_normal);
@@ -874,9 +892,6 @@ fn ray_fragment_main(input: RayFragmentInput) -> @location(0) vec4f {
         let tangent = normalize(cross(helper, world_normal));
         let bitangent = cross(world_normal, tangent);
 
-        let mesh = meshes[hit.mesh_idx];
-        let albedo = materials[mesh.material_idx].albedo; 
-        
         let u = rand(&rng);
         let v = rand(&rng);
         let sqrt_v = sqrt(v);
@@ -887,7 +902,7 @@ fn ray_fragment_main(input: RayFragmentInput) -> @location(0) vec4f {
         ray.origin = position + BOUNCE_RAY_BIAS * world_normal;
         ray.direction = bounce_dir;
 
-        throughput *= albedo;
+        throughput *= mat.albedo;
 
         // russian roulette
         // only apply after 3rd bounce

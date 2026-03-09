@@ -26,5 +26,5 @@ export interface Material {
   albedo: Vec3;
   roughness: number;
   metalness: number;
-  useProceduralTexture: boolean;
+  materialType: number; // 0 = standard, 1 = procedural, 2 = emissive
 }

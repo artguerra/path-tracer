@@ -1,3 +1,5 @@
+import { vec3 } from "wgpu-matrix";
+
 import { Camera } from "./camera";
 import { mergeMeshes, type MeshInstance, type MergedGeometry } from "./mesh";
 import type { GPUApp, GPUAppBase } from "./renderer";
@@ -44,6 +46,36 @@ export class Scene {
       if (light.type === "area") this.areaLights.push(light);
     }
 
+    // create area light visualizations
+    for (const l of this.areaLights) {
+      const matIdx = this.materials.length;
+      
+      this.materials.push({
+        albedo: vec3.create(l.color[0], l.color[1], l.color[2]),
+        roughness: 1.0,
+        metalness: 0.0,
+        materialType: 2, // emissive
+      });
+
+      const p0 = l.position;
+      const p1 = vec3.add(p0, l.u);
+      const p2 = vec3.add(p1, l.v);
+      const p3 = vec3.add(p0, l.v);
+
+      // normal vector
+      const n = vec3.normalize(vec3.cross(l.u, l.v));
+
+      // add as a mesh
+      this.instances.push({
+        mesh: {
+          positions: new Float32Array([...p0, ...p1, ...p2, ...p3]),
+          normals: new Float32Array([...n, ...n, ...n, ...n]),
+          indices: new Uint32Array([0, 1, 2, 0, 2, 3]),
+        },
+        materialIndex: matIdx
+      } as MeshInstance);
+    }
+
     this.mergedGeometry = mergeMeshes(this.instances);
   }
 
@@ -80,7 +112,7 @@ export class Scene {
       matDataF32.set(m.albedo, offset);
       matDataF32[offset + 3] = m.roughness;
       matDataF32[offset + 4] = m.metalness;
-      matDataU32[offset + 5] = m.useProceduralTexture ? 1 : 0;
+      matDataU32[offset + 5] = m.materialType;
       // 6, 7 are padding
     }
     this.matBuffer = createGPUBuffer(app.device, matData, storageUsage);
@@ -131,7 +163,6 @@ export class Scene {
 
       aF32View.set(l.v, offset + 12);
       aF32View[offset + 15] = 0.0; // padding
-
     }
   }
 
@@ -142,14 +173,17 @@ export class Scene {
   updateMaterials(app: GPUApp) {
     if (!this.buffersInitialized) return;
 
-    const matData = new Float32Array(this.materials.length * 8);
+    const matData = new ArrayBuffer(this.materials.length * 8 * 4);
+    const matDataF32 = new Float32Array(matData);
+    const matDataU32 = new Uint32Array(matData);
 
     for (let i = 0; i < this.materials.length; i++) {
       const m = this.materials[i];
       const offset = i * 8;
-      matData.set(m.albedo, offset);
-      matData[offset + 3] = m.roughness;
-      matData[offset + 4] = m.metalness;
+      matDataF32.set(m.albedo, offset);
+      matDataF32[offset + 3] = m.roughness;
+      matDataF32[offset + 4] = m.metalness;
+      matDataU32[offset + 5] = m.materialType;
     }
 
     app.device.queue.writeBuffer(this.matBuffer!, 0, matData);
