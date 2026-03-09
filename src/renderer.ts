@@ -27,7 +27,11 @@ export async function initWebGPU(canvas: HTMLCanvasElement): Promise<GPUAppBase>
   });
   if (!adapter) throw new Error("No adapter available for WebGPU.");
 
-  const device = await adapter.requestDevice();
+  const device = await adapter.requestDevice({
+    requiredLimits: {
+      maxStorageBuffersPerShaderStage: adapter.limits.maxStorageBuffersPerShaderStage,
+    }
+  });
   const context = canvas.getContext("webgpu") as GPUCanvasContext;
   const canvasFormat = navigator.gpu.getPreferredCanvasFormat();
 
@@ -57,6 +61,7 @@ export function initRenderPipeline(app: GPUAppBase): GPUApp {
       { binding: 6, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: "read-only-storage" } },
       { binding: 7, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: "read-only-storage" } },
       { binding: 8, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: "read-only-storage" } },
+      { binding: 9, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: "read-only-storage" } },
     ]
   });
 
@@ -157,9 +162,10 @@ export function createSceneBindGroup(app: GPUApp, scene: Scene): GPUBindGroup {
       { binding: 3, resource: { buffer: scene.triBuffer! } },
       { binding: 4, resource: { buffer: scene.instanceBuffer! } },
       { binding: 5, resource: { buffer: scene.matBuffer! } },
-      { binding: 6, resource: { buffer: scene.lightBuffer! } },
-      { binding: 7, resource: { buffer: scene.bvhBuffer! } },
-      { binding: 8, resource: { buffer: scene.sortedIndicesBuffer! } },
+      { binding: 6, resource: { buffer: scene.pointLightBuffer! } },
+      { binding: 7, resource: { buffer: scene.areaLightBuffer! } },
+      { binding: 8, resource: { buffer: scene.bvhBuffer! } },
+      { binding: 9, resource: { buffer: scene.sortedIndicesBuffer! } },
     ],
   });
 }

@@ -9,7 +9,7 @@ export class Camera {
   modelMat: Mat4;
   viewMat: Mat4;
   invViewMat: Mat4;
-  transInvViewMat: Mat4;
+  transInvModelMat: Mat4;
   projMat: Mat4;
 
   // camera parameters
@@ -43,7 +43,7 @@ export class Camera {
     this.modelMat = mat4.identity();
     this.viewMat  = mat4.identity(); 
     this.invViewMat = mat4.identity();
-    this.transInvViewMat = mat4.identity();
+    this.transInvModelMat = mat4.identity();
     this.projMat = mat4.perspective(
       this.fov,
       this.aspect,
@@ -63,7 +63,7 @@ export class Camera {
   updateCamera() {
     mat4.lookAt(this.getCameraPosition(), this.target, this.up, this.viewMat);
     this.invViewMat = mat4.invert(this.viewMat);
-    this.transInvViewMat = mat4.transpose(this.invViewMat);
+    this.transInvModelMat = mat4.transpose(mat4.invert(this.modelMat));
   }
 
   pan(dx: number, dy: number) {

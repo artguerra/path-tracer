@@ -4,13 +4,22 @@ const INV_SQRT_3_4 = 1.154700538;
 const INV_PI = 1.0 / 3.14159265358979323846;
 const EPSILON = 1e-6;
 
-struct LightSource {
+struct PointLight {
   position: vec3<f32>,
   intensity: f32,
   color: vec3<f32>,
-  angle: f32,
-  spot: vec3<f32>,
   ray_traced_shadows: u32,
+}
+
+struct AreaLight {
+  position: vec3<f32>, // bottom left corner pos
+  intensity: f32,
+  color: vec3<f32>,
+  ray_traced_shadows: u32,
+  u: vec3<f32>, // edge 1 (width)
+  _pad1: f32,
+  v: vec3<f32>, // edge 2 (height)
+  _pad2: f32,
 }
 
 struct Material {
@@ -25,7 +34,7 @@ struct Camera {
   model_mat: mat4x4<f32>,
   view_mat: mat4x4<f32>,
   inv_view_mat: mat4x4<f32>,
-  trans_inv_view_mat: mat4x4<f32>,
+  trans_inv_model_mat: mat4x4<f32>,
   proj_mat: mat4x4<f32>,
   fov: f32,
   aspect_ratio: f32,
@@ -51,9 +60,10 @@ struct Scene {
   canvas_width: f32,
   canvas_height: f32,
   num_meshes: f32,
-  num_lights: f32,
-  _pad: vec3f,
+  num_point_lights: f32,
+  num_area_lights: f32,
   rng_seed: f32,
+  _pad: vec2<f32>,
 }
 
 @group(0) @binding(0)
@@ -75,12 +85,15 @@ var<storage, read> meshes: array<Mesh>;
 var<storage, read> materials: array<Material>;
 
 @group(0) @binding(6)
-var<storage, read> light_sources: array<LightSource>;
+var<storage, read> point_lights: array<PointLight>;
 
 @group(0) @binding(7)
-var<storage, read> bvh_nodes: array<BVHNode>;
+var<storage, read> area_lights: array<AreaLight>;
 
 @group(0) @binding(8)
+var<storage, read> bvh_nodes: array<BVHNode>;
+
+@group(0) @binding(9)
 var<storage, read> sorted_triangles: array<u32>; // triangles sorted according to bvh + mesh idx (i0, i1, i2, im)
 
 // ----------------------------- helper functions -----------------------------
@@ -109,8 +122,8 @@ fn sqr(x: f32) -> f32 {
   return x * x; 
 }
 
-fn attenuation(dist: f32, cone_decay: f32) -> f32 {
-  return cone_decay * (1.0 / sqr(dist));
+fn attenuation(dist: f32) -> f32 {
+  return 1.0 / (1.0 + (dist / 4.0) + sqr(dist / 2.0));
 }
 
 // -------------------------------------------- RNGs --------------------------------------------
@@ -357,55 +370,68 @@ fn brdf(
   let g = smith_ggx(wi, wo, n, alpha);
 
   let f_d = diffuse_color * (vec3f(1.0) - specular_color) / PI;
-  let f_s = f * d * g / 4.0;
+  let f_s = f * d * g / (4.0 * n_dot_l * n_dot_v);
 
   return (f_d + f_s);
 }
 
-// operate in view space i.e., in the local frame of the camera
-fn light_shade(
+fn point_light_shade(
   position: vec3f, 
   normal: vec3f, 
   material_idx: u32, 
   light_source_idx: u32, 
   wo: vec3f
 ) -> vec3f {
-  let light = light_sources[light_source_idx];
-  let cam = scene.camera;
+  let light = point_lights[light_source_idx];
 
-  let view_light_pos = cam.view_mat * vec4f(light.position, 1.0);
-  let view_light_target = cam.view_mat * vec4f(light.spot, 1.0);
-  let view_light_dir = normalize(view_light_target.xyz - view_light_pos.xyz);
-
-  var wi = view_light_pos.xyz - position;
+  var wi = light.position - position;
   let di = length(wi);
-
   wi = normalize(wi);
-  let spot_cone_decay = dot(-wi, view_light_dir) - light.angle;
 
-  if (spot_cone_decay <= 0.0) {
-    return vec3f(0.0); // out of spot light cone
-  }
-
-  let att = attenuation(di, spot_cone_decay);
+  let att = attenuation(di);
   let ir = light.color * light.intensity * att;
   var m = materials[material_idx];
 
-  // if (material_idx == 3) {
-  //   let world_pos = (cam.inv_view_mat * vec4f(position, 1.0)).xyz;
-  //   let noise = fbm_perlin_noise_3d(world_pos, 12u, 10.0, 1.0);
-  //   let t = 0.5 + 0.5 * noise;
-
-  //   let decayed_albedo = m.albedo * 0.6;
-  //   m.albedo = mix(m.albedo, decayed_albedo, t);
-  //   m.roughness = mix(m.roughness, min(m.roughness + 0.2, 1), t);
-  //   m.metalness = mix(m.metalness, max(m.metalness - 0.2, 0), t);
-  // }
-
   let fr = brdf(wi, wo, normal, m.albedo, m.roughness, m.metalness);
-  let color_response = ir * fr * max(0.0, dot(wi, normal));
 
-  return color_response;
+  return ir * fr * max(0.0, dot(wi, normal));
+}
+
+fn area_light_shade(
+  position: vec3f, 
+  normal: vec3f, 
+  material_idx: u32, 
+  light_source_idx: u32, 
+  light_point: vec3f,
+  wo: vec3f,
+) -> vec3f {
+  let light = area_lights[light_source_idx];
+
+  var wi = light_point - position;
+  let di = length(wi);
+  wi = normalize(wi);
+
+  // facing direction of the light
+  let u_x_v = cross(light.u, light.v);
+  let light_normal = normalize(u_x_v);
+
+  // check if light isnt shining backward
+  let cos_light = dot(light_normal, -wi);
+  if (cos_light <= 0.0) { 
+    return vec3f(0.0); 
+  } 
+
+  let area = length(u_x_v);
+  let pdf = 1.0 / area;
+  
+  let att = attenuation(di); 
+  
+  let ir = (light.color * light.intensity * cos_light * att) / pdf;
+
+  var m = materials[material_idx];
+  let fr = brdf(wi, wo, normal, m.albedo, m.roughness, m.metalness);
+
+  return ir * fr * max(0.0, dot(wi, normal));
 }
 
 fn compute_radiance(
@@ -415,10 +441,10 @@ fn compute_radiance(
   wo: vec3f
 ) -> vec3f {
   var color_response = vec3f(0.0);
-  let num_lights = u32(scene.num_lights);
+  let num_lights = u32(scene.num_point_lights);
 
   for (var light_source_idx = 0u; light_source_idx < num_lights; light_source_idx++) {
-    color_response += light_shade(position, normal, material_idx, light_source_idx, wo);
+    color_response += point_light_shade(position, normal, material_idx, light_source_idx, wo);
   }
 
   return color_response;
@@ -498,11 +524,11 @@ fn raster_vertex_main(input: RasterVertexInput) -> RasterVertexOutput {
 
   var output: RasterVertexOutput;
 
-  let p = cam.view_mat * cam.model_mat * vec4f(get_vert_pos(vert_index), 1.0); 
-  output.builtin_pos = cam.proj_mat * p; // to fire rasterization
+  let p = cam.model_mat * vec4f(get_vert_pos(vert_index), 1.0); 
+  output.builtin_pos = cam.proj_mat * cam.view_mat * p; // to fire rasterization
   output.position = p.xyz;
 
-  let n = cam.trans_inv_view_mat * vec4f(get_vert_normal(vert_index), 1.0);
+  let n = cam.trans_inv_model_mat * vec4f(get_vert_normal(vert_index), 1.0);
   output.normal = normalize(n.xyz);
   output.material_idx = mesh.material_idx; 
 
@@ -513,7 +539,9 @@ fn raster_vertex_main(input: RasterVertexInput) -> RasterVertexOutput {
 fn raster_fragment_main(input: RasterVertexOutput) -> @location(0) vec4f {
   let position = input.position;
   let normal = normalize(input.normal);
-  let wo = normalize(-position);
+
+  let cam_world_pos = scene.camera.inv_view_mat[3].xyz;
+  let wo = normalize(cam_world_pos - position);
 
   let color_response = compute_radiance(position, normal, input.material_idx, wo);
 
@@ -739,8 +767,7 @@ fn get_hit_vectors(hit: Hit, hit_pos: ptr<function, vec3f>, hit_normal: ptr<func
   ));
 }
 
-fn shade_rt(hit: Hit) -> vec4f {
-  let cam = scene.camera;
+fn shade_rt(hit: Hit, incoming_ray_dir: vec3f, rng: ptr<function, RngState>) -> vec4f {
   let mesh = meshes[hit.mesh_idx];
   let tri = get_bvh_triangle(hit.tri_idx);
   let uvw = vec3f(hit.u, hit.v, 1.0 - hit.u - hit.v);
@@ -749,15 +776,16 @@ fn shade_rt(hit: Hit) -> vec4f {
   var world_normal: vec3f;
   get_hit_vectors(hit, &position, &world_normal);
 
-  let view_normal = normalize((cam.trans_inv_view_mat * vec4f(world_normal, 1.0)).xyz);
-
   var color_response = vec3f(0.0);
-  let view_position = (cam.view_mat * cam.model_mat * vec4f(position, 1.0)).xyz;
-  let wo = normalize(-view_position);
-  let num_lights = u32(scene.num_lights);
+  let wo = normalize(-incoming_ray_dir);
+  let num_lights = u32(scene.num_area_lights);
 
   for (var light_source_idx = 0u; light_source_idx < num_lights; light_source_idx++) {
-    let l = light_sources[light_source_idx];
+    let l = area_lights[light_source_idx];
+
+    let u_rand = rand(rng);
+    let v_rand = rand(rng);
+    let light_point = l.position + (l.u * u_rand) + (l.v * v_rand);
 
     if (bool(l.ray_traced_shadows) == true) {
       var shadow_ray: Ray;
@@ -773,10 +801,10 @@ fn shade_rt(hit: Hit) -> vec4f {
       let in_shadow = ray_trace(shadow_ray, light_dist + EPSILON, true, &shadow_hit); // any hit
 
       if (in_shadow == false || (in_shadow == true && shadow_hit.t > light_dist)) {
-        color_response += light_shade(view_position, view_normal, mesh.material_idx, light_source_idx, wo); 
+        color_response += area_light_shade(position, world_normal, mesh.material_idx, light_source_idx, light_point, wo); 
       }
     } else {
-      color_response += light_shade(view_position, view_normal, mesh.material_idx, light_source_idx, wo);
+      color_response += area_light_shade(position, world_normal, mesh.material_idx, light_source_idx, light_point, wo);
     }
   }
 
@@ -832,7 +860,7 @@ fn ray_fragment_main(input: RayFragmentInput) -> @location(0) vec4f {
 
     for (var depth = 0u; depth < MAX_DEPTH; depth++) {
       if (ray_trace(ray, MAX_DISTANCE, false, &hit) == true) {
-        sample_color += shade_rt(hit).xyz * throughput;
+        sample_color += shade_rt(hit, ray.direction, &rng).xyz * throughput;
 
         var position: vec3f;
         var world_normal: vec3f;

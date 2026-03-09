@@ -91,9 +91,6 @@ async function main() {
   const camAspect = ui.canvas.width / ui.canvas.height;
   const camera = new Camera(vec3.create(0.0, s, 0.0), camAspect, 4.0 * s);
 
-  const spot = vec3.create(0.0, s, 0.0);
-  const angle = 0.3;
-
   const materials: Material[] = [
     { albedo: vec3.create(0.9, 0.9, 0.9), roughness: 1.0, metalness: 0.0, useProceduralTexture: false }, // white wall
     { albedo: vec3.create(0.9, 0.0, 0.0), roughness: 1.0, metalness: 0.0, useProceduralTexture: false }, // red wall
@@ -103,7 +100,16 @@ async function main() {
 
   const lights: LightSource[] = [
     // { position: vec3.create(-0.75*s, 1.5*s, 1.5*s), intensity: 1.5, color: vec3.create(1.0, 0.92, 0.56), angle, spot, rayTracedShadows: 1 },
-    { position: vec3.create(0.0, 1.9*s, -0.1), intensity: 1.5, color: vec3.create(1.0, 1.0, 1.0), angle: 0, spot, rayTracedShadows: 1 },
+    { type: "point", position: vec3.create(0.0, 1.9*s, -0.1), intensity: 1.5, color: vec3.create(1.0, 1.0, 1.0), rayTracedShadows: 1 },
+    {
+      type: "area",
+      position: vec3.create(-0.1, 0.99, -0.1),
+      intensity: 150,
+      u: vec3.create(0.2, 0.0, 0.0),
+      v: vec3.create(0.0, 0.0, 0.2),
+      color: vec3.create(1.0, 1.0, 1.0),
+      rayTracedShadows: 1
+    },
   ];
 
   const instances: MeshInstance[] = [
