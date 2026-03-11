@@ -2,7 +2,7 @@ import { vec3 } from "wgpu-matrix";
 
 import { Camera } from "./camera";
 import { mergeMeshes, type MeshInstance, type MergedGeometry } from "./mesh";
-import type { GPUApp, GPUAppBase } from "./renderer";
+import type { GPUAppPipeline, GPUAppBase } from "./renderer";
 import type { AreaLight, LightSource, Material, PointLight } from "./types";
 import { createGPUBuffer } from "./utils";
 import { BVHTree } from "./bvh";
@@ -18,7 +18,8 @@ export class Scene {
   bvh?: BVHTree;
   
   mergedGeometry: MergedGeometry;
-  time: number = 0;
+  toneMapping: number = 0;
+  time: number = 0.0;
 
   // GPU buffers
   buffersInitialized: boolean = false;
@@ -170,7 +171,7 @@ export class Scene {
     this.time += 1.0;
   }
 
-  updateMaterials(app: GPUApp) {
+  updateMaterials(app: GPUAppPipeline) {
     if (!this.buffersInitialized) return;
 
     const matData = new ArrayBuffer(this.materials.length * 8 * 4);
@@ -189,7 +190,7 @@ export class Scene {
     app.device.queue.writeBuffer(this.matBuffer!, 0, matData);
   }
 
-  updateGPU(app: GPUApp) {
+  updateGPU(app: GPUAppPipeline) {
     if (!this.buffersInitialized) return;
 
     const sceneData = new Float32Array(92);
@@ -212,7 +213,7 @@ export class Scene {
     sceneData[87] = this.pointLights.length;
     sceneData[88] = this.areaLights.length;
     sceneData[89] = this.time;
-    sceneData[90] = 0.0; // padding
+    sceneData[90] = this.toneMapping; // padding
     sceneData[91] = 0.0; // padding
 
     app.device.queue.writeBuffer(this.uniformBuffer!, 0, sceneData);

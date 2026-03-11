@@ -10,13 +10,26 @@ export interface GPUAppBase {
   canvasFormat: GPUTextureFormat;
 }
 
-export interface GPUApp extends GPUAppBase {
+export interface GPUAppPipeline extends GPUAppBase {
   depthTexture: GPUTexture;
+  accumulationRead: GPUTexture;
+  accumulationWrite: GPUTexture;
+
   shaderModule: GPUShaderModule;
   rasterPipeline: GPURenderPipeline;
   raytracingPipeline: GPURenderPipeline;
   wireframePipeline: GPURenderPipeline;
-  bindGroupLayout: GPUBindGroupLayout;
+
+  sceneBindGroupLayout: GPUBindGroupLayout;
+  geometryBindGroupLayout: GPUBindGroupLayout;
+  lightBindGroupLayout: GPUBindGroupLayout;
+}
+
+export interface GPUApp extends GPUAppPipeline {
+  sceneBindGroup: GPUBindGroup,
+  geometryBindGroupA: GPUBindGroup,
+  geometryBindGroupB: GPUBindGroup,
+  lightBindGroup: GPUBindGroup,
 }
 
 export async function initWebGPU(canvas: HTMLCanvasElement): Promise<GPUAppBase> {
@@ -44,29 +57,41 @@ export async function initWebGPU(canvas: HTMLCanvasElement): Promise<GPUAppBase>
   return { adapter, device, canvas, context, canvasFormat };
 }
 
-export function initRenderPipeline(app: GPUAppBase): GPUApp {
+export function initRenderPipeline(app: GPUAppBase): GPUAppPipeline {
   const shaderModule = app.device.createShaderModule({
     label: "rasterization/raytracing shaders",
     code: mainShaders,
   });
 
-  const bindGroupLayout = app.device.createBindGroupLayout({
+  const sceneBindGroupLayout = app.device.createBindGroupLayout({
     entries: [
       { binding: 0, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: "uniform" } },
+      { binding: 1, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: "read-only-storage" } },
+    ]
+  });
+
+  const geometryBindGroupLayout = app.device.createBindGroupLayout({
+    entries: [
+      { binding: 0, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: "read-only-storage" } },
       { binding: 1, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: "read-only-storage" } },
       { binding: 2, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: "read-only-storage" } },
       { binding: 3, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: "read-only-storage" } },
       { binding: 4, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: "read-only-storage" } },
       { binding: 5, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: "read-only-storage" } },
-      { binding: 6, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: "read-only-storage" } },
-      { binding: 7, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: "read-only-storage" } },
-      { binding: 8, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: "read-only-storage" } },
-      { binding: 9, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: "read-only-storage" } },
+      { binding: 6, visibility: GPUShaderStage.FRAGMENT, storageTexture: { format: "rgba32float", access: "read-only" } },
+      { binding: 7, visibility: GPUShaderStage.FRAGMENT, storageTexture: { format: "rgba32float", access: "write-only" } },
+    ]
+  });
+
+  const lightBindGroupLayout = app.device.createBindGroupLayout({
+    entries: [
+      { binding: 0, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: "read-only-storage" } },
+      { binding: 1, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: "read-only-storage" } },
     ]
   });
 
   const pipelineLayout = app.device.createPipelineLayout({
-    bindGroupLayouts: [bindGroupLayout],
+    bindGroupLayouts: [sceneBindGroupLayout, geometryBindGroupLayout, lightBindGroupLayout],
   });
 
   const rasterPipeline = app.device.createRenderPipeline({
@@ -144,33 +169,80 @@ export function initRenderPipeline(app: GPUAppBase): GPUApp {
     usage: GPUTextureUsage.RENDER_ATTACHMENT,
   });
 
-  return { ...app, shaderModule, bindGroupLayout,
-    rasterPipeline, raytracingPipeline, wireframePipeline, depthTexture };
+  const accumulationRead = app.device.createTexture({
+    size: [app.canvas.width, app.canvas.height],
+    format: "rgba32float",
+    usage: GPUTextureUsage.STORAGE_BINDING,
+  });
+
+  const accumulationWrite = app.device.createTexture({
+    size: [app.canvas.width, app.canvas.height],
+    format: "rgba32float",
+    usage: GPUTextureUsage.STORAGE_BINDING,
+  });
+
+  return { ...app, shaderModule, depthTexture, accumulationRead, accumulationWrite,
+    sceneBindGroupLayout, geometryBindGroupLayout, lightBindGroupLayout,
+    rasterPipeline, raytracingPipeline, wireframePipeline };
 }
 
-export function createSceneBindGroup(app: GPUApp, scene: Scene): GPUBindGroup {
+export function buildSceneBindGroups(app: GPUAppPipeline, scene: Scene): GPUApp {
   if (!scene.buffersInitialized) {
     throw new Error("Cannot create bind group: Scene buffers are not initialized.");
   }
 
-  return app.device.createBindGroup({
-    layout: app.bindGroupLayout,
+  const sceneBindGroup = app.device.createBindGroup({
+    label: "scene bind group",
+    layout: app.sceneBindGroupLayout,
     entries: [
       { binding: 0, resource: { buffer: scene.uniformBuffer! } },
-      { binding: 1, resource: { buffer: scene.posBuffer! } },
-      { binding: 2, resource: { buffer: scene.normBuffer! } },
-      { binding: 3, resource: { buffer: scene.triBuffer! } },
-      { binding: 4, resource: { buffer: scene.instanceBuffer! } },
-      { binding: 5, resource: { buffer: scene.matBuffer! } },
-      { binding: 6, resource: { buffer: scene.pointLightBuffer! } },
-      { binding: 7, resource: { buffer: scene.areaLightBuffer! } },
-      { binding: 8, resource: { buffer: scene.bvhBuffer! } },
-      { binding: 9, resource: { buffer: scene.sortedIndicesBuffer! } },
+      { binding: 1, resource: { buffer: scene.matBuffer! } },
     ],
   });
+
+  const geometryBindGroupA = app.device.createBindGroup({
+    label: "geometry bind group A",
+    layout: app.geometryBindGroupLayout,
+    entries: [
+      { binding: 0, resource: { buffer: scene.posBuffer! } },
+      { binding: 1, resource: { buffer: scene.normBuffer! } },
+      { binding: 2, resource: { buffer: scene.triBuffer! } },
+      { binding: 3, resource: { buffer: scene.instanceBuffer! } },
+      { binding: 4, resource: { buffer: scene.bvhBuffer! } },
+      { binding: 5, resource: { buffer: scene.sortedIndicesBuffer! } },
+      { binding: 6, resource: app.accumulationRead.createView() },
+      { binding: 7, resource: app.accumulationWrite.createView() },
+    ],
+  });
+
+  const geometryBindGroupB = app.device.createBindGroup({
+    label: "geometry bind group B",
+    layout: app.geometryBindGroupLayout,
+    entries: [
+      { binding: 0, resource: { buffer: scene.posBuffer! } },
+      { binding: 1, resource: { buffer: scene.normBuffer! } },
+      { binding: 2, resource: { buffer: scene.triBuffer! } },
+      { binding: 3, resource: { buffer: scene.instanceBuffer! } },
+      { binding: 4, resource: { buffer: scene.bvhBuffer! } },
+      { binding: 5, resource: { buffer: scene.sortedIndicesBuffer! } },
+      { binding: 6, resource: app.accumulationWrite.createView() },
+      { binding: 7, resource: app.accumulationRead.createView() },
+    ],
+  });
+
+  const lightBindGroup = app.device.createBindGroup({
+    label: "light bind group",
+    layout: app.lightBindGroupLayout,
+    entries: [
+      { binding: 0, resource: { buffer: scene.pointLightBuffer! } },
+      { binding: 1, resource: { buffer: scene.areaLightBuffer! } },
+    ],
+  });
+
+  return { ...app, sceneBindGroup, geometryBindGroupA, geometryBindGroupB, lightBindGroup };
 }
 
-export function render(app: GPUApp, scene: Scene, bindGroup: GPUBindGroup, useRaytracing: boolean): void {
+export function render(app: GPUApp, scene: Scene, useRaytracing: boolean): void {
   const renderPassDescriptor: GPURenderPassDescriptor = {
     label: "Main rendering pass",
     colorAttachments: [{
@@ -190,7 +262,9 @@ export function render(app: GPUApp, scene: Scene, bindGroup: GPUBindGroup, useRa
   const encoder = app.device.createCommandEncoder({ label: "display encoder" });
   const pass = encoder.beginRenderPass(renderPassDescriptor);
 
-  pass.setBindGroup(0, bindGroup);
+  pass.setBindGroup(0, app.sceneBindGroup);
+  pass.setBindGroup(1, (scene.time % 2 === 0) ? app.geometryBindGroupA : app.geometryBindGroupB);
+  pass.setBindGroup(2, app.lightBindGroup);
 
   if (useRaytracing) {
     pass.setPipeline(app.raytracingPipeline);

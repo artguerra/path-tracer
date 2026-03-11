@@ -1,7 +1,7 @@
 import { vec3, type Vec3 } from "wgpu-matrix";
 
 import { Camera } from "./camera";
-import { type GPUApp, initWebGPU, initRenderPipeline, createSceneBindGroup, render } from "./renderer";
+import { initWebGPU, initRenderPipeline, buildSceneBindGroups, render, type GPUAppPipeline } from "./renderer";
 import { Scene } from "./scene";
 import { type MeshInstance, createBox, createQuad, createSphere } from "./mesh";
 import type { Material, LightSource } from "./types";
@@ -12,6 +12,7 @@ const ui = {
   albedoPicker: document.querySelector("#diffuseAlbedo") as HTMLInputElement,
   roughnessSlider: document.querySelector("#roughness") as HTMLInputElement,
   metalnessSlider: document.querySelector("#metalness") as HTMLInputElement,
+  toneMappingCheck: document.querySelector("#toneMappingCheckbox") as HTMLInputElement,
 };
 
 function hexToSRGB(hex: string): Vec3 {
@@ -22,7 +23,7 @@ function hexToSRGB(hex: string): Vec3 {
   );
 }
 
-function initEvents(app: GPUApp, scene: Scene) {
+function initEvents(app: GPUAppPipeline, scene: Scene) {
   ui.canvas.addEventListener("mousedown", e => {
     scene.camera.lastX = e.clientX;
     scene.camera.lastY = e.clientY;
@@ -31,9 +32,11 @@ function initEvents(app: GPUApp, scene: Scene) {
     if (e.button === 1 || e.button === 2) scene.camera.panning = true;
   });
 
-  window.addEventListener("mouseup", () => {
+  ui.canvas.addEventListener("mouseup", () => {
     scene.camera.dragging = false;
     scene.camera.panning = false;
+
+    scene.time = 0.0
   });
 
   ui.canvas.addEventListener("mousemove", e => {
@@ -48,6 +51,8 @@ function initEvents(app: GPUApp, scene: Scene) {
 
       const maxPitch = Math.PI / 2 - 0.01;
       scene.camera.pitch = Math.max(-maxPitch, Math.min(maxPitch, scene.camera.pitch));
+
+      scene.time = 0.0;
     }
 
     if (scene.camera.panning) {
@@ -59,19 +64,21 @@ function initEvents(app: GPUApp, scene: Scene) {
     e.preventDefault();
     scene.camera.radius *= 1 + e.deltaY * scene.camera.zoomSpeed;
     scene.camera.radius = Math.max(scene.camera.minRadius, Math.min(scene.camera.maxRadius, scene.camera.radius));
+    scene.time = 0.0;
   }, { passive: false });
 
   ui.canvas.addEventListener("contextmenu", e => e.preventDefault());
 
   ui.albedoPicker.addEventListener("input", () => {
+    scene.time = 0.0;
     scene.materials[3].albedo = hexToSRGB(ui.albedoPicker.value);
-    console.log(scene.materials[3].albedo)
     scene.updateMaterials(app);
   });
 
   ui.roughnessSlider.addEventListener("input", () => {
     const val = parseFloat(ui.roughnessSlider.value);
 
+    scene.time = 0.0;
     scene.materials[3].roughness = val;
     scene.updateMaterials(app);
   });
@@ -79,14 +86,20 @@ function initEvents(app: GPUApp, scene: Scene) {
   ui.metalnessSlider.addEventListener("input", () => {
     const val = parseFloat(ui.metalnessSlider.value);
 
+    scene.time = 0.0;
     scene.materials[3].metalness = val;
     scene.updateMaterials(app);
+  });
+
+  ui.raytracingCheck.addEventListener("input", () => { scene.time = 0.0; });
+  ui.toneMappingCheck.addEventListener("input", () => {
+    scene.toneMapping = +ui.toneMappingCheck.checked;
   });
 }
 
 async function main() {
   const baseApp = await initWebGPU(ui.canvas);
-  const app = initRenderPipeline(baseApp);
+  const pipelineApp = initRenderPipeline(baseApp);
 
   const s = 0.5;
   const camAspect = ui.canvas.width / ui.canvas.height;
@@ -105,7 +118,7 @@ async function main() {
     {
       type: "area",
       position: vec3.create(-0.1, 0.99, -0.1),
-      intensity: 50,
+      intensity: 40,
       u: vec3.create(0.2, 0.0, 0.0),
       v: vec3.create(0.0, 0.0, 0.2),
       color: vec3.create(1.0, 1.0, 1.0),
@@ -126,11 +139,10 @@ async function main() {
 
   const scene = new Scene(camera, instances, materials, lights);
   scene.computeBVH();
-  scene.createBuffers(app);
+  scene.createBuffers(pipelineApp);
+  initEvents(pipelineApp, scene);
 
-  const bindGroup = createSceneBindGroup(app, scene);
-
-  initEvents(app, scene);
+  const app = buildSceneBindGroups(pipelineApp, scene);
 
   function frame() {
     const raytracingEnabled = ui.raytracingCheck.checked;
@@ -139,7 +151,7 @@ async function main() {
     scene.camera.updateCamera();
     scene.updateGPU(app);
 
-    render(app, scene, bindGroup, raytracingEnabled);
+    render(app, scene, raytracingEnabled);
     requestAnimationFrame(frame);
   }
   

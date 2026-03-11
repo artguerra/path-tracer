@@ -62,39 +62,46 @@ struct Scene {
   num_meshes: f32,
   num_point_lights: f32,
   num_area_lights: f32,
-  rng_seed: f32,
-  _pad: vec2<f32>,
+  frame_count: f32,
+  tone_mapping: f32,
+  _pad: f32,
 }
 
 @group(0) @binding(0)
 var<uniform> scene: Scene;
 
 @group(0) @binding(1)
-var<storage, read> positions: array<f32>; // packed positions for all meshes
-
-@group(0) @binding(2)
-var<storage, read> normals: array<f32>; // packed normals for all meshes
-
-@group(0) @binding(3)
-var<storage, read> triangles: array<u32>; // packed triangles for all meshes
-
-@group(0) @binding(4)
-var<storage, read> meshes: array<Mesh>;
-
-@group(0) @binding(5)
 var<storage, read> materials: array<Material>;
 
-@group(0) @binding(6)
-var<storage, read> point_lights: array<PointLight>;
+@group(1) @binding(0)
+var<storage, read> positions: array<f32>; // packed positions for all meshes
 
-@group(0) @binding(7)
-var<storage, read> area_lights: array<AreaLight>;
+@group(1) @binding(1)
+var<storage, read> normals: array<f32>; // packed normals for all meshes
 
-@group(0) @binding(8)
+@group(1) @binding(2)
+var<storage, read> triangles: array<u32>; // packed triangles for all meshes
+
+@group(1) @binding(3)
+var<storage, read> meshes: array<Mesh>;
+
+@group(1) @binding(4)
 var<storage, read> bvh_nodes: array<BVHNode>;
 
-@group(0) @binding(9)
+@group(1) @binding(5)
 var<storage, read> sorted_triangles: array<u32>; // triangles sorted according to bvh + mesh idx (i0, i1, i2, im)
+
+@group(1) @binding(6)
+var accumulation_prev: texture_storage_2d<rgba32float, read>;
+
+@group(1) @binding(7)
+var accumulation_next: texture_storage_2d<rgba32float, write>;
+
+@group(2) @binding(0)
+var<storage, read> point_lights: array<PointLight>;
+
+@group(2) @binding(1)
+var<storage, read> area_lights: array<AreaLight>;
 
 // ----------------------------- helper functions -----------------------------
 
@@ -316,8 +323,8 @@ fn fbm_perlin_noise_3d(x: vec3f, octaves: u32, initial_freq: f32, initial_amp: f
 }
 
 // ----------------------------- BRDF functions -----------------------------
-fn trowbridge_reitz_ndf(wh: vec3f, n: vec3f, roughness: f32) -> f32 {
-  let alpha2 = sqr(roughness);
+fn trowbridge_reitz_ndf(wh: vec3f, n: vec3f, alpha: f32) -> f32 {
+  let alpha2 = sqr(alpha);
 
   return alpha2 / (PI * sqr(1.0 + (alpha2 - 1.0) * sqr(dot(n, wh))));
 }
@@ -326,15 +333,15 @@ fn schlick_fresnel(wi: vec3f, wh: vec3f, f0: vec3f) -> vec3f {
   return f0 + (1.0 - f0) * pow(1.0 - max(0.0, dot(wi, wh)), 5.0);
 }
 
-fn smith_g1(w: vec3f, n: vec3f, roughness: f32) -> f32 {
+fn smith_g1(w: vec3f, n: vec3f, alpha: f32) -> f32 {
   let n_dot_w = dot(n, w);
-  let alpha2 = sqr(roughness);
+  let alpha2 = sqr(alpha);
 
   return (2.0 * n_dot_w) / (n_dot_w + sqrt(alpha2 + (1.0 - alpha2) * sqr(n_dot_w)));
 }
 
-fn smith_ggx(wi: vec3f, wo: vec3f, n: vec3f, roughness: f32) -> f32 {
-  return smith_g1(wi, n, roughness) * smith_g1(wo, n, roughness);
+fn smith_ggx(wi: vec3f, wo: vec3f, n: vec3f, alpha: f32) -> f32 {
+  return smith_g1(wi, n, alpha) * smith_g1(wo, n, alpha);
 }
 
 fn brdf(
@@ -352,11 +359,16 @@ fn brdf(
   let n_dot_l = max(0.0, dot(n, wi));
   let n_dot_v = max(0.0, dot(n, wo));
 
-  if (n_dot_l <= 0.0) { // not in the reflection hemisphere
-      return vec3f(0.0); 
+  if (n_dot_l <= 0.0 || n_dot_v <= 0) { // not in the reflection hemisphere
+    return vec3f(0.0); 
   }
 
-  let wh = normalize(wi + wo);
+  let h = wi + wo;
+  if (dot(h, h) <= 1e-9) {
+    return vec3f(0.0);
+  }
+  let wh = normalize(h);
+
   let n_dot_h = max(0.0, dot(n, wh));
   let v_dot_h = max(0.0, dot(wo, wh));
 
@@ -843,11 +855,7 @@ fn shade_rt(hit: Hit, incoming_ray_dir: vec3f, p_spec: f32, p_diff: f32, rng: pt
     let area = length(u_x_v);
     
     // solid angle pdf (dist^2) / (area * cos_light). 
-    let pdf_light = (di * di) / (area * cos_light) * (1.0 / num_lights_f);
-    let pdf_brdf = evaluate_brdf_pdf(wi, wo, world_normal, mat.roughness, p_spec, p_diff);
-
-    // MIS power heuristic
-    let mis_weight = (pdf_light * pdf_light) / (pdf_light * pdf_light + pdf_brdf * pdf_brdf);
+    let pdf_light = (di * di) / (area * cos_light * num_lights_f);
 
     var in_shadow = false;
     if (bool(l.ray_traced_shadows)) {
@@ -864,8 +872,8 @@ fn shade_rt(hit: Hit, incoming_ray_dir: vec3f, p_spec: f32, p_diff: f32, rng: pt
       let fr = brdf(wi, wo, world_normal, mat.albedo, mat.roughness, mat.metalness);
       let li = l.color * l.intensity; 
       
-      // L = (BRDF * L_i * cos(theta)) / pdf_light * mis_weight
-      color_response += (fr * li * n_dot_l / pdf_light) * mis_weight;
+      // L = (BRDF * L_i * cos(theta)) / pdf_light
+      color_response += (fr * li * n_dot_l) / pdf_light;
     }
   }
 
@@ -890,14 +898,23 @@ fn ray_vertex_main(input: RayVertexInput) -> RayVertexOutput {
   return output;
 }
 
-const STRATIFIED_GRID_N = 6u;
+fn tone_map_aces(v: vec3f) -> vec3f {
+  let a = 2.51;
+  let b = 0.03;
+  let c = 2.43;
+  let d = 0.59;
+  let e = 0.14;
+  return clamp((v * (a * v + b)) / (v * (c * v + d) + e), vec3f(0.0), vec3f(1.0));
+}
+
+const STRATIFIED_GRID_N = 2u;
 const SPP: u32 = STRATIFIED_GRID_N * STRATIFIED_GRID_N;
-const MAX_DEPTH: u32 = 3u;
+const MAX_DEPTH: u32 = 5u;
 
 @fragment
 fn ray_fragment_main(input: RayFragmentInput) -> @location(0) vec4f {
   let pixel_idx = u32(input.frag_pos.x) + u32(input.frag_pos.y) * u32(scene.canvas_width);
-  var rng = init_rng(pixel_idx + u32(scene.rng_seed) * 719393u);
+  var rng = init_rng(pixel_idx + u32(scene.frame_count) * 719393u);
 
   let grid_step = 1.0 / f32(STRATIFIED_GRID_N);
 
@@ -1004,8 +1021,19 @@ fn ray_fragment_main(input: RayFragmentInput) -> @location(0) vec4f {
       }
     }
 
+    sample_color = min(sample_color, vec3f(10.0));
     total_color += sample_color;
   }
 
-  return vec4f(total_color / f32(SPP), 1.0);
+  let tex_coord = vec2<u32>(input.frag_pos.xy);
+  var accumulated = total_color / f32(SPP);
+
+  if (scene.frame_count > 1) {
+    let prev_color = textureLoad(accumulation_prev, tex_coord).xyz;
+    accumulated = (1.0 / scene.frame_count) * accumulated + ((scene.frame_count - 1.0) / scene.frame_count) * prev_color;
+  }
+
+  textureStore(accumulation_next, tex_coord, vec4f(accumulated, 1.0));
+
+  return vec4f(mix(accumulated, tone_map_aces(accumulated), scene.tone_mapping), 1.0);
 }
