@@ -256,7 +256,7 @@ export function render(app: GPUApp, scene: Scene, useRaytracing: boolean): void 
   const pass = encoder.beginRenderPass(renderPassDescriptor);
 
   pass.setBindGroup(0, app.sceneBindGroup);
-  pass.setBindGroup(1, (scene.time % 2 === 0) ? app.geometryBindGroupA : app.geometryBindGroupB);
+  pass.setBindGroup(1, (scene.frameCount % 2 === 0) ? app.geometryBindGroupA : app.geometryBindGroupB);
   pass.setBindGroup(2, app.lightBindGroup);
 
   if (useRaytracing) {

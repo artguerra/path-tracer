@@ -18,8 +18,11 @@ export class Scene {
   bvh?: BVHTree;
   
   mergedGeometry: MergedGeometry;
-  toneMapping: number = 0;
-  time: number = 0.0;
+  toneMappingEnabled: boolean = false;
+  accumulationEnabled: boolean = true;
+  stratifiedGridSize: number = 2;
+  maxRayDepth: number = 3;
+  frameCount: number = 0.0;
 
   // GPU buffers
   buffersInitialized: boolean = false;
@@ -137,7 +140,7 @@ export class Scene {
     this.bvhBuffer = createGPUBuffer(app.device, this.bvhDataArray!, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST);
 
     this.uniformBuffer = app.device.createBuffer({
-      size: 92 * 4, // 92 floats in scene struct in shader
+      size: 96 * 4, // 96 floats in scene struct in shader
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
 
@@ -207,7 +210,7 @@ export class Scene {
   }
 
   animate() {
-    this.time += 1.0;
+    this.frameCount += 1.0;
   }
 
   updateMaterials(app: GPUAppPipeline) {
@@ -232,28 +235,34 @@ export class Scene {
   updateGPU(app: GPUAppPipeline) {
     if (!this.buffersInitialized) return;
 
-    const sceneData = new Float32Array(92);
+    const sceneData = new ArrayBuffer(96 * 4);
+    const f32View = new Float32Array(sceneData);
+    const u32View = new Uint32Array(sceneData);
 
     // matrices
-    sceneData.set(this.camera.modelMat, 0);
-    sceneData.set(this.camera.viewMat, 16);
-    sceneData.set(this.camera.invViewMat, 32);
-    sceneData.set(this.camera.transInvModelMat, 48);
-    sceneData.set(this.camera.projMat, 64);
+    f32View.set(this.camera.modelMat, 0);
+    f32View.set(this.camera.viewMat, 16);
+    f32View.set(this.camera.invViewMat, 32);
+    f32View.set(this.camera.transInvModelMat, 48);
+    f32View.set(this.camera.projMat, 64);
     
     // camera
-    sceneData[80] = this.camera.fov;
-    sceneData[81] = this.camera.aspect;
+    f32View[80] = this.camera.fov;
+    f32View[81] = this.camera.aspect;
     
     // scene
-    sceneData[84] = app.canvas.width;
-    sceneData[85] = app.canvas.height;
-    sceneData[86] = this.instances.length;
-    sceneData[87] = this.pointLights.length;
-    sceneData[88] = this.areaLights.length;
-    sceneData[89] = this.time;
-    sceneData[90] = this.toneMapping; // padding
-    sceneData[91] = 0.0; // padding
+    f32View[84] = app.canvas.width;
+    f32View[85] = app.canvas.height;
+    f32View[86] = this.instances.length;
+    f32View[87] = this.pointLights.length;
+    f32View[88] = this.areaLights.length;
+    u32View[89] = new Uint32Array([Date.now()])[0]; // take only LSB
+    u32View[90] = this.frameCount;
+    u32View[91] = 0; // padding
+    u32View[92] = +this.toneMappingEnabled;
+    u32View[93] = +this.accumulationEnabled;
+    u32View[94] = this.maxRayDepth;
+    u32View[95] = this.stratifiedGridSize;
 
     app.device.queue.writeBuffer(this.uniformBuffer!, 0, sceneData);
 

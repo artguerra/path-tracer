@@ -3,7 +3,7 @@ import { vec3, type Vec3 } from "wgpu-matrix";
 import { Camera } from "./camera";
 import { initWebGPU, initRenderPipeline, buildSceneBindGroups, render, type GPUAppPipeline } from "./renderer";
 import { Scene } from "./scene";
-import { type MeshInstance, createBox, createQuad, createSphere } from "./mesh";
+import { type MeshInstance, createBox, createQuad, createSphere, createCylinder } from "./mesh";
 import type { Material, LightSource } from "./types";
 
 const ui = {
@@ -13,6 +13,19 @@ const ui = {
   roughnessSlider: document.querySelector("#roughness") as HTMLInputElement,
   metalnessSlider: document.querySelector("#metalness") as HTMLInputElement,
   toneMappingCheck: document.querySelector("#toneMappingCheckbox") as HTMLInputElement,
+  accumulationCheck: document.querySelector("#accumulationCheckbox") as HTMLInputElement,
+  maxDepthSlider: document.querySelector("#rayDepth") as HTMLInputElement,
+  stratifiedGridSlider: document.querySelector("#stratifiedGridN") as HTMLInputElement,
+  sppText: document.querySelector("#spp") as HTMLSpanElement,
+  depthText: document.querySelector("#depthText") as HTMLSpanElement,
+  fpsText: document.querySelector("#fpsCounter") as HTMLSpanElement,
+  frameTimeText: document.querySelector("#frameTime") as HTMLSpanElement,
+};
+
+const keys: Record<string, boolean> = {
+  w: false, a: false, s: false, d: false,
+  ArrowUp: false, ArrowDown: false, ArrowLeft: false, ArrowRight: false,
+  e: false, q: false
 };
 
 function hexToSRGB(hex: string): Vec3 {
@@ -27,50 +40,41 @@ function initEvents(app: GPUAppPipeline, scene: Scene) {
   ui.canvas.addEventListener("mousedown", e => {
     scene.camera.lastX = e.clientX;
     scene.camera.lastY = e.clientY;
-
     if (e.button === 0) scene.camera.dragging = true;
-    if (e.button === 1 || e.button === 2) scene.camera.panning = true;
   });
 
-  ui.canvas.addEventListener("mouseup", () => {
+  window.addEventListener("mouseup", () => {
     scene.camera.dragging = false;
-    scene.camera.panning = false;
-
-    scene.time = 0.0
   });
 
   ui.canvas.addEventListener("mousemove", e => {
+    if (!scene.camera.dragging) return;
+
     const dx = e.clientX - scene.camera.lastX;
     const dy = e.clientY - scene.camera.lastY;
     scene.camera.lastX = e.clientX;
     scene.camera.lastY = e.clientY;
 
-    if (scene.camera.dragging) {
-      scene.camera.yaw -= dx * scene.camera.rotateSpeed;
-      scene.camera.pitch += dy * scene.camera.rotateSpeed;
-
-      const maxPitch = Math.PI / 2 - 0.01;
-      scene.camera.pitch = Math.max(-maxPitch, Math.min(maxPitch, scene.camera.pitch));
-
-      scene.time = 0.0;
-    }
-
-    if (scene.camera.panning) {
-      scene.camera.pan(dx, -dy);
-    }
+    scene.camera.processMouseMovement(dx, dy);
+    scene.frameCount = 0.0;
   });
 
-  ui.canvas.addEventListener("wheel", e => {
-    e.preventDefault();
-    scene.camera.radius *= 1 + e.deltaY * scene.camera.zoomSpeed;
-    scene.camera.radius = Math.max(scene.camera.minRadius, Math.min(scene.camera.maxRadius, scene.camera.radius));
-    scene.time = 0.0;
-  }, { passive: false });
+ window.addEventListener("keydown", (e) => {
+    const k = e.key.toLowerCase();
+    if (keys.hasOwnProperty(k)) keys[k] = true;
+    if (keys.hasOwnProperty(e.key)) keys[e.key] = true;
+  });
+
+  window.addEventListener("keyup", (e) => {
+    const k = e.key.toLowerCase();
+    if (keys.hasOwnProperty(k)) keys[k] = false;
+    if (keys.hasOwnProperty(e.key)) keys[e.key] = false;
+  });
 
   ui.canvas.addEventListener("contextmenu", e => e.preventDefault());
 
   ui.albedoPicker.addEventListener("input", () => {
-    scene.time = 0.0;
+    scene.frameCount = 0.0;
     scene.materials[3].albedo = hexToSRGB(ui.albedoPicker.value);
     scene.updateMaterials(app);
   });
@@ -78,7 +82,7 @@ function initEvents(app: GPUAppPipeline, scene: Scene) {
   ui.roughnessSlider.addEventListener("input", () => {
     const val = parseFloat(ui.roughnessSlider.value);
 
-    scene.time = 0.0;
+    scene.frameCount = 0.0;
     scene.materials[3].roughness = val;
     scene.updateMaterials(app);
   });
@@ -86,24 +90,73 @@ function initEvents(app: GPUAppPipeline, scene: Scene) {
   ui.metalnessSlider.addEventListener("input", () => {
     const val = parseFloat(ui.metalnessSlider.value);
 
-    scene.time = 0.0;
+    scene.frameCount = 0.0;
     scene.materials[3].metalness = val;
     scene.updateMaterials(app);
   });
 
-  ui.raytracingCheck.addEventListener("input", () => { scene.time = 0.0; });
+  ui.raytracingCheck.addEventListener("input", () => { scene.frameCount = 0.0; });
+
   ui.toneMappingCheck.addEventListener("input", () => {
-    scene.toneMapping = +ui.toneMappingCheck.checked;
+    scene.toneMappingEnabled = ui.toneMappingCheck.checked;
+  });
+
+  ui.accumulationCheck.addEventListener("input", () => {
+    scene.accumulationEnabled = ui.accumulationCheck.checked;
+    scene.frameCount = 0.0;
+  });
+
+  ui.maxDepthSlider.addEventListener("input", () => {
+    const val = parseInt(ui.maxDepthSlider.value);
+
+    scene.frameCount = 0.0;
+    scene.maxRayDepth = val;
+    ui.depthText.innerText = `${val}`;
+  });
+
+  ui.stratifiedGridSlider.addEventListener("input", () => {
+    const val = parseInt(ui.stratifiedGridSlider.value);
+
+    scene.frameCount = 0.0;
+    scene.stratifiedGridSize = val;
+    ui.sppText.innerText = `${val * val}`;
   });
 }
 
-async function main() {
-  const baseApp = await initWebGPU(ui.canvas);
-  const pipelineApp = initRenderPipeline(baseApp);
+function handleCameraMovement(scene: Scene) {
+  let moveForward = 0;
+  let moveRight = 0;
+  let moveUp = 0;
 
-  const s = 0.5;
+  if (keys.w || keys.ArrowUp) moveForward += 1;
+  if (keys.s || keys.ArrowDown) moveForward -= 1;
+  if (keys.d || keys.ArrowRight) moveRight += 1;
+  if (keys.a || keys.ArrowLeft) moveRight -= 1;
+  if (keys.e) moveUp += 1;
+  if (keys.q) moveUp -= 1;
+
+  if (moveForward !== 0 || moveRight !== 0 || moveUp !== 0) {
+    scene.camera.processKeyboard(moveForward, moveRight, moveUp);
+    scene.frameCount = 0.0;
+  }
+}
+
+let lastTime = performance.now();
+
+function updateStats() {
+  const now = performance.now();
+  const dt = now - lastTime;
+  lastTime = now;
+
+  ui.fpsText.textContent = (1000 / dt).toFixed(1);
+  ui.frameTimeText.textContent = `${dt.toFixed(2)} ms`;
+}
+
+type SceneData = [Camera, Material[], LightSource[], MeshInstance[]];
+
+function createCornellBox(): SceneData {
   const camAspect = ui.canvas.width / ui.canvas.height;
-  const camera = new Camera(vec3.create(0.0, s, 0.0), camAspect, 4.0 * s);
+  const camera = new Camera(vec3.create(0.0, 0.6, 1.75), camAspect);
 
   const materials: Material[] = [
     { albedo: vec3.create(0.9, 0.9, 0.9), roughness: 1.0, metalness: 0.0, materialType: 0 }, // white wall
@@ -113,8 +166,7 @@ async function main() {
   ];
 
   const lights: LightSource[] = [
-    // { position: vec3.create(-0.75*s, 1.5*s, 1.5*s), intensity: 1.5, color: vec3.create(1.0, 0.92, 0.56), angle, spot, rayTracedShadows: 1 },
-    { type: "point", position: vec3.create(0.0, 1.9*s, -0.1), intensity: 1.5, color: vec3.create(1.0, 1.0, 1.0), rayTracedShadows: 1 },
+    { type: "point", position: vec3.create(0.0, 0.99, -0.1), intensity: 1.5, color: vec3.create(1.0, 1.0, 1.0), rayTracedShadows: 1 },
     {
       type: "area",
       position: vec3.create(-0.1, 0.99, -0.1),
@@ -127,15 +179,23 @@ async function main() {
   ];
 
   const instances: MeshInstance[] = [
-    { mesh: createQuad([-s, 0.0, -s], [0.0, 0.0, 2.0*s], [2.0*s, 0.0, 0.0]), materialIndex: 0 }, // floor
-    { mesh: createQuad([-s, 2.0*s, -s], [2.0*s, 0.0, 0.0], [0.0, 0.0, 2.0*s]), materialIndex: 0 }, // ceiling
-    { mesh: createQuad([-s, 0.0, -s], [2.0*s, 0.0, 0.0], [0.0, 2.0*s, 0.0]), materialIndex: 0 }, // back wall
-    { mesh: createQuad([-s, 0.0, -s], [0.0, 2.0*s, 0.0], [0.0, 0.0, 2.0*s]), materialIndex: 1 }, // left wall
-    { mesh: createQuad([s, 0.0, -s], [0.0, 0.0, 2.0*s], [0.0, 2.0*s, 0.0]), materialIndex: 2 },  // right wall
-    // { mesh: createSphere([0.0, s, 0.0], 0.2, 32, 32), materialIndex: 3 },
-    { mesh: createBox([-0.15, 0.0, -0.35], s * 0.6, 1.15 * s, s * 0.6, Math.PI / 3), materialIndex: 3 },
-    { mesh: createBox([0.1, 0.0, -0.05], s * 0.6, 0.6 * s, s * 0.6, Math.PI / 9), materialIndex: 3 },
+    { mesh: createQuad([-0.5, 0.0, -0.5], [0.0, 0.0, 1.0], [1.0, 0.0, 0.0]), materialIndex: 0 }, // floor
+    { mesh: createQuad([-0.5, 1.0, -0.5], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]), materialIndex: 0 }, // ceiling
+    { mesh: createQuad([-0.5, 0.0, -0.5], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]), materialIndex: 0 }, // back wall
+    { mesh: createQuad([-0.5, 0.0, -0.5], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]), materialIndex: 1 }, // left wall
+    { mesh: createQuad([0.5, 0.0, -0.5], [0.0, 0.0, 1.0], [0.0, 1.0, 0.0]), materialIndex: 2 },  // right wall
+    { mesh: createBox([-0.15, 0.0, -0.35], 0.3, 0.575, 0.3, Math.PI / 3), materialIndex: 3 },
+    { mesh: createBox([0.1, 0.0, -0.05], 0.3, 0.3, 0.3, Math.PI / 9), materialIndex: 3 },
   ];
+
+  return [camera, materials, lights, instances];
+}
+
+async function main() {
+  const baseApp = await initWebGPU(ui.canvas);
+  const pipelineApp = initRenderPipeline(baseApp);
+
+  const [ camera, materials, lights, instances ] = createCornellBox();
 
   const scene = new Scene(camera, instances, materials, lights);
   scene.computeBVH();
@@ -145,14 +205,17 @@ async function main() {
   const app = buildSceneBindGroups(pipelineApp, scene);
 
   function frame() {
-    const raytracingEnabled = ui.raytracingCheck.checked;
+    updateStats();
 
+    handleCameraMovement(scene);
     scene.animate();
     scene.camera.updateCamera();
     scene.updateGPU(app);
 
+    const raytracingEnabled = ui.raytracingCheck.checked;
     render(app, scene, raytracingEnabled);
     requestAnimationFrame(frame);
+
   }
   
   requestAnimationFrame(frame);

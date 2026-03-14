@@ -233,3 +233,99 @@ export function createSphere(origin: number[], radius: number, latitudeRes: numb
     indices: new Uint32Array(indices)
   };
 }
+
+export function createCylinder(
+  origin: number[], radius: number, height: number, radialSegments: number
+): Mesh {
+  const positions: number[] = [];
+  const normals: number[] = [];
+  const indices: number[] = [];
+
+  let vOffset = 0;
+
+  for (let i = 0; i < radialSegments; i++) {
+    const theta1 = (i / radialSegments) * 2.0 * Math.PI;
+    const theta2 = ((i + 1) / radialSegments) * 2.0 * Math.PI;
+
+    const x1 = Math.cos(theta1) * radius;
+    const z1 = Math.sin(theta1) * radius;
+    const x2 = Math.cos(theta2) * radius;
+    const z2 = Math.sin(theta2) * radius;
+
+    positions.push(
+      origin[0] + x1, origin[1], origin[2] + z1,
+      origin[0] + x2, origin[1], origin[2] + z2,
+      origin[0] + x2, origin[1] + height, origin[2] + z2,
+      origin[0] + x1, origin[1] + height, origin[2] + z1
+    );
+
+    const nx = (x1 + x2) / 2.0;
+    const nz = (z1 + z2) / 2.0;
+    const n = vec3.normalize(vec3.create(nx, 0, nz));
+    normals.push(n[0], n[1], n[2], n[0], n[1], n[2], n[0], n[1], n[2], n[0], n[1], n[2]);
+
+    indices.push(
+      vOffset + 0, vOffset + 2, vOffset + 1,
+      vOffset + 0, vOffset + 3, vOffset + 2
+    );
+    vOffset += 4;
+  }
+
+  // top cap
+  for (let i = 0; i < radialSegments; i++) {
+    const theta1 = (i / radialSegments) * 2.0 * Math.PI;
+    const theta2 = ((i + 1) / radialSegments) * 2.0 * Math.PI;
+
+    const x1 = Math.cos(theta1) * radius;
+    const z1 = Math.sin(theta1) * radius;
+    const x2 = Math.cos(theta2) * radius;
+    const z2 = Math.sin(theta2) * radius;
+
+    positions.push(
+      origin[0], origin[1] + height, origin[2],
+      origin[0] + x1, origin[1] + height, origin[2] + z1,
+      origin[0] + x2, origin[1] + height, origin[2] + z2
+    );
+
+    normals.push(
+      0, 1, 0,
+      0, 1, 0,
+      0, 1, 0
+    );
+
+    indices.push(vOffset + 0, vOffset + 2, vOffset + 1);
+    vOffset += 3;
+  }
+
+  // bottom cap
+  for (let i = 0; i < radialSegments; i++) {
+    const theta1 = (i / radialSegments) * 2.0 * Math.PI;
+    const theta2 = ((i + 1) / radialSegments) * 2.0 * Math.PI;
+
+    const x1 = Math.cos(theta1) * radius;
+    const z1 = Math.sin(theta1) * radius;
+    const x2 = Math.cos(theta2) * radius;
+    const z2 = Math.sin(theta2) * radius;
+
+    positions.push(
+      origin[0], origin[1], origin[2],
+      origin[0] + x1, origin[1], origin[2] + z1,
+      origin[0] + x2, origin[1], origin[2] + z2
+    );
+
+    normals.push(
+      0, -1, 0,
+      0, -1, 0,
+      0, -1, 0
+    );
+
+    indices.push(vOffset + 0, vOffset + 1, vOffset + 2);
+    vOffset += 3;
+  }
+
+  return {
+    positions: new Float32Array(positions),
+    normals: new Float32Array(normals),
+    indices: new Uint32Array(indices)
+  };
+}

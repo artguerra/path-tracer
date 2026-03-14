@@ -2,8 +2,10 @@ import { type Vec3, vec3, type Mat4, mat4 } from "wgpu-matrix";
 
 export class Camera {
   // world vectors
-  target: Vec3;
-  up: Vec3 = vec3.create(0, 1, 0);
+  position: Vec3;
+  front: Vec3 = vec3.create(0, 0, -1);
+  right: Vec3 = vec3.create(1, 0, 0);
+  worldUp: Vec3 = vec3.create(0, 1, 0);
 
   // matrices
   modelMat: Mat4;
@@ -17,28 +19,21 @@ export class Camera {
   fov: number = Math.PI / 4.0;
   near: number = 0.1;
   far: number = 10000.0;
-  radius: number = 1;
 
   // camera control
-  yaw: number = 0;
+  yaw: number = 0; // start by looking down the -Z axis
   pitch: number = 0;
 
-  rotateSpeed: number = 0.005;
-  zoomSpeed: number = 0.001;
-  panSpeed: number = 0.002;
-  
-  minRadius: number = 1;
-  maxRadius: number = 10000;
+  rotateSpeed: number = 0.001;
+  moveSpeed: number = 0.05;
 
-  dragging: boolean  = false;
-  panning: boolean = false;
+  dragging: boolean = false;
   lastX: number = 0;
   lastY: number = 0;
 
-  constructor(target: Vec3, aspectRatio: number, radius: number) {
-    this.target = target;
+  constructor(position: Vec3, aspectRatio: number) {
+    this.position = position;
     this.aspect = aspectRatio;
-    this.radius = radius;
 
     this.modelMat = mat4.identity();
     this.viewMat  = mat4.identity(); 
@@ -50,38 +45,41 @@ export class Camera {
       this.near,
       this.far
     );
+    
+    this.updateVectors();
   }
 
-  getCameraPosition() {
-    return [
-      this.target[0] + this.radius * Math.cos(this.pitch) * Math.sin(this.yaw),
-      this.target[1] + this.radius * Math.sin(this.pitch),
-      this.target[2] + this.radius * Math.cos(this.pitch) * Math.cos(this.yaw)
-    ];
+  updateVectors() {
+    this.front[0] = -Math.cos(this.pitch) * Math.sin(this.yaw);
+    this.front[1] = -Math.sin(this.pitch);
+    this.front[2] = -Math.cos(this.pitch) * Math.cos(this.yaw);
+    vec3.normalize(this.front, this.front);
+
+    vec3.cross(this.front, this.worldUp, this.right);
+    vec3.normalize(this.right, this.right);
   }
 
   updateCamera() {
-    mat4.lookAt(this.getCameraPosition(), this.target, this.up, this.viewMat);
+    this.updateVectors();
+    
+    const target = vec3.add(this.position, this.front);
+    mat4.lookAt(this.position, target, this.worldUp, this.viewMat);
+    
     this.invViewMat = mat4.invert(this.viewMat);
     this.transInvModelMat = mat4.transpose(mat4.invert(this.modelMat));
   }
 
-  pan(dx: number, dy: number) {
-    const cosYaw = Math.cos(this.yaw);
-    const sinYaw = Math.sin(this.yaw);
+  processMouseMovement(dx: number, dy: number) {
+    this.yaw -= dx * this.rotateSpeed;
+    this.pitch += dy * this.rotateSpeed;
 
-    // right vector
-    const rightX = cosYaw;
-    const rightZ = -sinYaw;
+    const maxPitch = Math.PI / 2 - 0.01;
+    this.pitch = Math.max(-maxPitch, Math.min(maxPitch, this.pitch));
+  }
 
-    // up vector (world up)
-    const upX = 0;
-    const upZ = 0;
-
-    const scale = this.radius * this.panSpeed;
-
-    this.target[0] -= (rightX * dx - upX * dy) * scale;
-    this.target[1] -= dy * scale;
-    this.target[2] -= (rightZ * dx - upZ * dy) * scale;
+  processKeyboard(forward: number, right: number, up: number) {
+    if (forward !== 0) vec3.addScaled(this.position, this.front, forward * this.moveSpeed, this.position);
+    if (right !== 0) vec3.addScaled(this.position, this.right, right * this.moveSpeed, this.position);
+    if (up !== 0) vec3.addScaled(this.position, this.worldUp, up * this.moveSpeed, this.position);
   }
 }

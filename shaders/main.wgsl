@@ -65,9 +65,17 @@ struct Scene {
   num_meshes: f32,
   num_point_lights: f32,
   num_area_lights: f32,
-  frame_count: f32,
-  tone_mapping: f32,
-  _pad: f32,
+
+  // time
+  timestamp: u32,
+  frame_count: u32,
+  _pad: u32,
+
+  // options
+  tone_mapping: u32,
+  accumulation_enabled: u32,
+  max_ray_depth: u32,
+  stratified_grid_n: u32,
 }
 
 @group(0) @binding(0)
@@ -889,23 +897,21 @@ fn tone_map_aces(v: vec3f) -> vec3f {
   return clamp((v * (a * v + b)) / (v * (c * v + d) + e), vec3f(0.0), vec3f(1.0));
 }
 
-const STRATIFIED_GRID_N = 2u;
-const SPP: u32 = STRATIFIED_GRID_N * STRATIFIED_GRID_N;
-const MAX_DEPTH: u32 = 5u;
-
 @fragment
 fn ray_fragment_main(input: RayFragmentInput) -> @location(0) vec4f {
   let pixel_idx = u32(input.frag_pos.x) + u32(input.frag_pos.y) * u32(scene.canvas_width);
-  var rng = init_rng(pixel_idx + u32(scene.frame_count) * 719393u);
+  var rng = init_rng(pixel_idx + scene.timestamp * 719393u);
 
-  let grid_step = 1.0 / f32(STRATIFIED_GRID_N);
+  let grid_n = scene.stratified_grid_n;
+  let spp = scene.stratified_grid_n * scene.stratified_grid_n;
+  let grid_step = 1.0 / f32(grid_n);
 
   var total_color = vec3f(0.0, 0.0, 0.0);
   var hit: Hit;
 
-  for (var sample = 0u; sample < SPP; sample++) {
-    let cell_x = sample % STRATIFIED_GRID_N;
-    let cell_y = sample / STRATIFIED_GRID_N;
+  for (var sample = 0u; sample < spp; sample++) {
+    let cell_x = sample % grid_n;
+    let cell_y = sample / grid_n;
 
     let cell_start_x = f32(cell_x) * grid_step;
     let cell_start_y = f32(cell_y) * grid_step;
@@ -918,7 +924,7 @@ fn ray_fragment_main(input: RayFragmentInput) -> @location(0) vec4f {
     var throughput = vec3f(1.0);
     var sample_color = vec3f(0.0);
 
-    for (var depth = 0u; depth < MAX_DEPTH; depth++) {
+    for (var depth = 0u; depth < scene.max_ray_depth; depth++) {
       if (ray_trace(ray, MAX_DISTANCE, false, &hit) == true) {
         let mesh = meshes[hit.mesh_idx];
         let mat = materials[mesh.material_idx];
@@ -1008,14 +1014,23 @@ fn ray_fragment_main(input: RayFragmentInput) -> @location(0) vec4f {
   }
 
   let tex_coord = vec2<u32>(input.frag_pos.xy);
-  var accumulated = total_color / f32(SPP);
+  var accumulated = total_color / f32(spp);
 
-  if (scene.frame_count > 1) {
-    let prev_color = textureLoad(accumulation_prev, tex_coord).xyz;
-    accumulated = (1.0 / scene.frame_count) * accumulated + ((scene.frame_count - 1.0) / scene.frame_count) * prev_color;
+  if (scene.accumulation_enabled != 0u) {
+    if (scene.frame_count > 1) {
+      let prev_color = textureLoad(accumulation_prev, tex_coord).xyz;
+      let f = f32(scene.frame_count);
+
+      accumulated = (1.0 / f) * accumulated + ((f - 1.0) / f) * prev_color;
+    }
+
+    textureStore(accumulation_next, tex_coord, vec4f(accumulated, 1.0));
   }
 
-  textureStore(accumulation_next, tex_coord, vec4f(accumulated, 1.0));
+  var finalColor = accumulated;
+  if (scene.tone_mapping != 0u) {
+    finalColor = tone_map_aces(accumulated);
+  }
 
-  return vec4f(mix(accumulated, tone_map_aces(accumulated), scene.tone_mapping), 1.0);
+  return vec4f(finalColor, 1.0);
 }
