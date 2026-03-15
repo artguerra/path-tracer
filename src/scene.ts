@@ -23,6 +23,7 @@ export class Scene {
   
   mergedGeometry: MergedGeometry;
   toneMappingEnabled: boolean = false;
+  restirEnabled: boolean = true;
   accumulationEnabled: boolean = true;
   stratifiedGridSize: number = 2;
   maxRayDepth: number = 3;
@@ -242,11 +243,11 @@ export class Scene {
     u32View[88] = this.emissiveTriangles.length;
     u32View[89] = new Uint32Array([Date.now()])[0]; // take only LSB
     u32View[90] = this.frameCount;
-    u32View[91] = 0; // padding
-    u32View[92] = +this.toneMappingEnabled;
-    u32View[93] = +this.accumulationEnabled;
-    u32View[94] = this.maxRayDepth;
-    u32View[95] = this.stratifiedGridSize;
+    u32View[91] = +this.toneMappingEnabled;
+    u32View[92] = +this.accumulationEnabled;
+    u32View[93] = this.maxRayDepth;
+    u32View[94] = this.stratifiedGridSize;
+    u32View[95] = +this.restirEnabled;
 
     app.device.queue.writeBuffer(this.uniformBuffer!, 0, sceneData);
 

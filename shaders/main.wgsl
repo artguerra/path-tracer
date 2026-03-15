@@ -75,13 +75,13 @@ struct Scene {
   // time
   timestamp: u32,
   frame_count: u32,
-  _pad: u32,
 
   // options
   tone_mapping: u32,
   accumulation_enabled: u32,
   max_ray_depth: u32,
   stratified_grid_n: u32,
+  restir_enabled: u32,
 }
 
 @group(0) @binding(0)
@@ -675,6 +675,63 @@ fn uniform_light_sample_pdf(d: f32, area: f32, cos_light: f32) -> f32 {
   return pdf;
 }
 
+// ----------------------------- ReSTIR -----------------------------
+struct Reservoir {
+  chosen_sample: u32,
+  w_sum: f32,
+  m: u32, // samples seen so far
+}
+
+fn update_reservoir(
+  xi: u32, // new sample
+  wi: f32, // weight associated to xi
+  res: ptr<function, Reservoir>, // the reservoir to update
+  u: f32 // uniform random variable
+) {
+  (*res).m++;
+  (*res).w_sum += wi;
+
+  let choosing_prob = wi / (*res).w_sum;
+  if (u < choosing_prob) {
+    (*res).chosen_sample = xi;
+  }
+}
+
+fn sample_light_ris(pos: vec3f, wo: vec3f, normal: vec3f, mat: Material, rng: ptr<function, RngState>) -> u32 {
+  const M = 32u; // number of candidate samples from source distribution
+  var res = Reservoir(0u, 0.0, 0u);
+
+  for (var i = 0u; i < M; i++) {
+    let xi = sample_light_uniform(rand(rng));
+    let emissive_tri = emissive_triangles[xi];
+
+    // sample a random point on triangle
+    var light_point: vec3f;
+    var light_normal: vec3f;
+    var area: f32;
+    sample_triangle(emissive_tri.tri_idx, emissive_tri.mesh_idx, vec2f(rand(rng), rand(rng)), &light_point, &light_normal, &area);
+
+    let pos_to_light = light_point - pos;
+    let di = length(pos_to_light);
+    let omega_i = pos_to_light / di;
+
+    let n_dot_l = dot(normal, omega_i);
+    let fr = brdf(omega_i, wo, normal, mat.albedo, mat.roughness, mat.metalness);
+
+    let light_mesh = meshes[emissive_tri.mesh_idx];
+    let light_mat = materials[light_mesh.material_idx];
+    let li = light_mat.albedo * light_mat.emission_strength;
+
+    // L = (BRDF * L_i * cos(theta)) / pdf_light
+    let radiance = fr * li * n_dot_l;
+
+    let wi = length((radiance) / 1.0);
+    update_reservoir(xi, wi, &res, rand(rng));
+  }
+
+  return res.chosen_sample;
+}
+
 fn shade_rt(hit: Hit, incoming_ray_dir: vec3f, rng: ptr<function, RngState>) -> vec4f {
   let mesh = meshes[hit.mesh_idx];
   let mat = materials[mesh.material_idx];
@@ -688,8 +745,13 @@ fn shade_rt(hit: Hit, incoming_ray_dir: vec3f, rng: ptr<function, RngState>) -> 
   
   if (scene.num_emissive_triangles == 0u) { return vec4f(0.0, 0.0, 0.0, 1.0); }
 
-  // uniform light sampling
-  let light_idx = sample_light_uniform(rand(rng));
+  var light_idx: u32;
+  if (scene.restir_enabled == 0u) {
+    // uniform light sampling
+    light_idx = sample_light_uniform(rand(rng));
+  } else {
+    light_idx = sample_light_ris(position, wo, world_normal, mat, rng);
+  }
   let emissive_tri = emissive_triangles[light_idx];
 
   // sample a random point on triangle
@@ -698,9 +760,6 @@ fn shade_rt(hit: Hit, incoming_ray_dir: vec3f, rng: ptr<function, RngState>) -> 
   var area: f32;
   sample_triangle(emissive_tri.tri_idx, emissive_tri.mesh_idx, vec2f(rand(rng), rand(rng)), &light_point, &light_normal, &area);
 
-  let u_rand = rand(rng);
-  let v_rand = rand(rng);
-  
   let pos_to_light = light_point - position;
   let di = length(pos_to_light);
   let wi = pos_to_light / di;
