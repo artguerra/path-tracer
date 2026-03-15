@@ -14,17 +14,12 @@ export interface PointLight extends LightSourceBase {
   type: "point";
 }
 
-export interface AreaLight extends LightSourceBase {
-  type: "area";
-  u: Vec3; // edge 1 (width)
-  v: Vec3; // edge 2 (height)
-}
-
-export type LightSource = PointLight | AreaLight;
+export type LightSource = PointLight;
 
 export interface Material {
   albedo: Vec3;
   roughness: number;
   metalness: number;
   materialType: number; // 0 = standard, 1 = procedural, 2 = emissive
+  emissionStrength: number; // 0 = not emissive, >0 emissive
 }

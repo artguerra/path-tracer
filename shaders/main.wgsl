@@ -27,7 +27,13 @@ struct Material {
   roughness: f32,
   metalness: f32,
   material_type: u32,
-  _pad: vec2<f32>,
+  emission_strength: f32,
+  _pad: f32,
+}
+
+struct EmissiveTriangle {
+  tri_idx: u32,
+  mesh_idx: u32,
 }
 
 struct Camera {
@@ -63,8 +69,8 @@ struct Scene {
   canvas_width: f32,
   canvas_height: f32,
   num_meshes: f32,
-  num_point_lights: f32,
-  num_area_lights: f32,
+  num_point_lights: u32,
+  num_emissive_triangles: u32,
 
   // time
   timestamp: u32,
@@ -109,7 +115,7 @@ var accumulation_next: texture_storage_2d<rgba32float, write>;
 var<storage, read> point_lights: array<PointLight>;
 
 @group(2) @binding(1)
-var<storage, read> area_lights: array<AreaLight>;
+var<storage, read> emissive_triangles: array<EmissiveTriangle>;
 
 // ----------------------------- helper functions -----------------------------
 
@@ -177,155 +183,8 @@ fn rand(state: ptr<function, RngState>) -> f32 {
   return f32(r) * 2.3283064365387e-10;
 }
 
-// from https://www.shadertoy.com/view/4djSRW
-fn rand_dir_2d(p: vec2f) -> vec2f {
-	var p3 = fract(vec3(p.xyx) * vec3(0.1031, 0.1030, 0.0973));
-  p3 += dot(p3, p3.yzx + 33.33);
-
-  return -1.0 + 2.0 * fract((p3.xx + p3.yz) * p3.zy);
-}
-
-fn rand_dir_3d(p: vec3f) -> vec3f {
-	var p3 = fract(p * vec3f(0.1031, 0.1030, 0.0973));
-  p3 += dot(p3, p3.yxz + 33.33);
-
-  return -1.0 + 2.0 * fract((p3.xxy + p3.yxx) * p3.zyx);
-}
-
-// ----------------------------- noise functions ----------------------------- 
-
-fn gradient_eval(corner: vec2f, p: vec2f) -> f32 {
-  let dist = p - corner;
-  let grad = rand_dir_2d(corner);
-
-  return dot(dist, grad);
-}
-
-fn gradient_eval_3d(corner: vec3f, p: vec3f) -> f32 {
-  let dist = p - corner;
-  let grad = rand_dir_3d(corner);
-
-  return dot(dist, grad);
-}
-
-fn quintic_interpolation(t: vec2f) -> vec2f {
-  // 6t^5 - 15t^4 + 10t^3
-  return t * t * t * (t * (t * 6.0 - 15.0) + 10.0);
-}
-
-fn quintic_interpolation_3d(t: vec3f) -> vec3f {
-  // 6t^5 - 15t^4 + 10t^3
-  return t * t * t * (t * (t * 6.0 - 15.0) + 10.0);
-}
-
-fn perlin_noise_2d(x: vec2f, freq: f32, amp: f32) -> f32 {
-  let p = x * freq;
-
-  let i = floor(p);
-  let f = fract(p);
-
-  // corners
-  let i00 = i;
-  let i01 = i + vec2f(0.0, 1.0);
-  let i10 = i + vec2f(1.0, 0.0);
-  let i11 = i + vec2f(1.0, 1.0);
-
-  // gradients at the corners
-  let n00 = gradient_eval(i00, p);
-  let n01 = gradient_eval(i01, p);
-  let n10 = gradient_eval(i10, p);
-  let n11 = gradient_eval(i11, p);
-
-  // interpolation
-  let qi = quintic_interpolation(f);
-  let nx0 = mix(n00, n10, qi.x);
-  let nx1 = mix(n01, n11, qi.x);
-  let noise_val = mix(nx0, nx1, qi.y);
-
-  // originally in range [-sqrt(1/2), sqrt(1/2)]
-  let scaled = noise_val * SQRT_2;
-
-  // apply amplitude, clamp to [-1,1]
-  return clamp(scaled * amp, -1.0, 1.0);
-}
-
-fn perlin_noise_3d(x: vec3f, freq: f32, amp: f32) -> f32 {
-  let p = x * freq;
-
-  let i = floor(p);
-  let f = fract(p);
-
-  // corners
-  let i000 = i + vec3f(0.0, 0.0, 0.0);
-  let i100 = i + vec3f(1.0, 0.0, 0.0);
-  let i010 = i + vec3f(0.0, 1.0, 0.0);
-  let i110 = i + vec3f(1.0, 1.0, 0.0);
-  let i001 = i + vec3f(0.0, 0.0, 1.0);
-  let i101 = i + vec3f(1.0, 0.0, 1.0);
-  let i011 = i + vec3f(0.0, 1.0, 1.0);
-  let i111 = i + vec3f(1.0, 1.0, 1.0);
-
-  // gradients at the corners
-  let n000 = gradient_eval_3d(i000, p);
-  let n100 = gradient_eval_3d(i100, p);
-  let n010 = gradient_eval_3d(i010, p);
-  let n110 = gradient_eval_3d(i110, p);
-  let n001 = gradient_eval_3d(i001, p);
-  let n101 = gradient_eval_3d(i101, p);
-  let n011 = gradient_eval_3d(i011, p);
-  let n111 = gradient_eval_3d(i111, p);
-
-  // interpolation
-  let qi = quintic_interpolation_3d(f);
-
-  // along x axis
-  let nx00 = mix(n000, n100, qi.x);
-  let nx01 = mix(n001, n101, qi.x);
-  let nx10 = mix(n010, n110, qi.x);
-  let nx11 = mix(n011, n111, qi.x);
-
-  // along y axis
-  let ny0 = mix(nx00, nx10, qi.y);
-  let ny1 = mix(nx01, nx11, qi.y);
-
-  let noise_val = mix(ny0, ny1, qi.z);
-
-  // originally in range [-sqrt(0.75), sqrt(0.75)]
-  let scaled = noise_val * INV_SQRT_3_4;
-
-  // apply amplitude, clamp to [-1,1]
-  return clamp(scaled * amp, -1.0, 1.0);
-}
-
-fn fbm_perlin_noise_2d(x: vec2f, octaves: u32, initial_freq: f32, initial_amp: f32) -> f32 {
-  var total = 0.0;
-  var cur_freq = initial_freq;
-  var cur_amp = initial_amp;
-
-  for (var i: u32 = 0u; i < octaves; i++) {
-    total += perlin_noise_2d(x, cur_freq, cur_amp);
-    cur_freq *= 2.0;
-    cur_amp /= 2.0;
-  }
-
-  return total;
-}
-
-fn fbm_perlin_noise_3d(x: vec3f, octaves: u32, initial_freq: f32, initial_amp: f32) -> f32 {
-  var total = 0.0;
-  var cur_freq = initial_freq;
-  var cur_amp = initial_amp;
-
-  for (var i: u32 = 0u; i < octaves; i++) {
-    total += perlin_noise_3d(x, cur_freq, cur_amp);
-    cur_freq *= 2.0;
-    cur_amp /= 2.0;
-  }
-
-  return total;
-}
-
 // ----------------------------- BRDF functions -----------------------------
+
 fn trowbridge_reitz_ndf(wh: vec3f, n: vec3f, alpha: f32) -> f32 {
   let alpha2 = sqr(alpha);
 
@@ -439,43 +298,6 @@ fn point_light_shade(
   let ir = light.color * light.intensity * att;
   var m = materials[material_idx];
 
-  let fr = brdf(wi, wo, normal, m.albedo, m.roughness, m.metalness);
-
-  return ir * fr * max(0.0, dot(wi, normal));
-}
-
-fn area_light_shade(
-  position: vec3f, 
-  normal: vec3f, 
-  material_idx: u32, 
-  light_source_idx: u32, 
-  light_point: vec3f,
-  wo: vec3f,
-) -> vec3f {
-  let light = area_lights[light_source_idx];
-
-  var wi = light_point - position;
-  let di = length(wi);
-  wi = normalize(wi);
-
-  // facing direction of the light
-  let u_x_v = cross(light.u, light.v);
-  let light_normal = normalize(u_x_v);
-
-  // check if light isnt shining backward
-  let cos_light = dot(light_normal, -wi);
-  if (cos_light <= 0.0) { 
-    return vec3f(0.0); 
-  } 
-
-  let area = length(u_x_v);
-  let pdf = 1.0 / area;
-  
-  let att = attenuation(di); 
-  
-  let ir = (light.color * light.intensity * cos_light * att) / pdf;
-
-  var m = materials[material_idx];
   let fr = brdf(wi, wo, normal, m.albedo, m.roughness, m.metalness);
 
   return ir * fr * max(0.0, dot(wi, normal));
@@ -598,7 +420,7 @@ fn raster_fragment_main(input: RasterVertexOutput) -> @location(0) vec4f {
   let wo = normalize(cam_world_pos - position);
 
   let mat = materials[input.material_idx];
-  if (mat.material_type == 2u) {
+  if (mat.emission_strength > 0.0) {
     return vec4f(mat.albedo, 1.0);
   }
 
@@ -719,7 +541,8 @@ fn intersect_triangle(
 fn ray_trace(
   ray: Ray, 
   max_distance: f32, 
-  any_hit: bool, 
+  any_hit: bool,
+  ignore_tri: u32, 
   hit: ptr<function, Hit>
 ) -> bool {
   var intersection_found = false;
@@ -746,16 +569,13 @@ fn ray_trace(
 
           for (var i = 0u; i < node.primitive_count; i++) {
             let tri_idx = start_tri + i;
+            if (tri_idx == ignore_tri) { continue; }
+
             let tri = get_triangle(tri_idx);
 
             let p0 = get_vert_pos(mesh.pos_offset + tri.x);
             let p1 = get_vert_pos(mesh.pos_offset + tri.y);
             let p2 = get_vert_pos(mesh.pos_offset + tri.z);
-
-            // shadow rays pass through emissive area lights
-            if (any_hit == true && materials[mesh.material_idx].material_type == 2u) {
-              continue; 
-            }
 
             var tri_hit: Hit;
             tri_hit.tri_idx = tri_idx;
@@ -810,7 +630,52 @@ fn get_hit_vectors(hit: Hit, hit_pos: ptr<function, vec3f>, hit_normal: ptr<func
   ));
 }
 
-fn shade_rt(hit: Hit, incoming_ray_dir: vec3f, p_spec: f32, p_diff: f32, rng: ptr<function, RngState>) -> vec4f {
+fn sample_triangle(
+  tri_idx: u32, 
+  mesh_idx: u32, 
+  s: vec2f, 
+  pos: ptr<function, vec3f>, 
+  normal: ptr<function, vec3f>, 
+  area: ptr<function, f32>
+) {
+  let mesh = meshes[mesh_idx];
+  let tri = get_triangle(tri_idx);
+
+  let p0 = get_vert_pos(mesh.pos_offset + tri.x);
+  let p1 = get_vert_pos(mesh.pos_offset + tri.y);
+  let p2 = get_vert_pos(mesh.pos_offset + tri.z);
+
+  // uniform barycentric sampling
+  let sqrt_r1 = sqrt(s.x);
+  let u = 1.0 - sqrt_r1;
+  let v = s.y * sqrt_r1;
+  let w = 1.0 - u - v;
+
+  *pos = u * p0 + v * p1 + w * p2;
+
+  // area and normal
+  let edge1 = p1 - p0;
+  let edge2 = p2 - p0;
+  let cross = cross(edge1, edge2);
+  
+  *area = 0.5 * length(cross);
+  *normal = normalize(cross);
+}
+
+// uniform light sampling
+fn sample_light_uniform(u: f32) -> u32 {
+  let n = scene.num_emissive_triangles;
+  let light_idx = min(u32(u * f32(n)), n - 1u);
+  return light_idx;
+}
+
+fn uniform_light_sample_pdf(d: f32, area: f32, cos_light: f32) -> f32 {
+  // solid angle pdf (dist^2) / (area * cos_light). 
+  let pdf = (d * d) / (area * cos_light * f32(scene.num_emissive_triangles));
+  return pdf;
+}
+
+fn shade_rt(hit: Hit, incoming_ray_dir: vec3f, rng: ptr<function, RngState>) -> vec4f {
   let mesh = meshes[hit.mesh_idx];
   let mat = materials[mesh.material_idx];
   
@@ -821,49 +686,49 @@ fn shade_rt(hit: Hit, incoming_ray_dir: vec3f, p_spec: f32, p_diff: f32, rng: pt
   var color_response = vec3f(0.0);
   let wo = normalize(-incoming_ray_dir);
   
-  let num_lights_f = f32(scene.num_area_lights);
-  if (num_lights_f == 0.0) { return vec4f(0.0, 0.0, 0.0, 1.0); }
+  if (scene.num_emissive_triangles == 0u) { return vec4f(0.0, 0.0, 0.0, 1.0); }
 
   // uniform light sampling
-  let light_idx = min(u32(rand(rng) * num_lights_f), u32(scene.num_area_lights) - 1u);
-  let l = area_lights[light_idx];
+  let light_idx = sample_light_uniform(rand(rng));
+  let emissive_tri = emissive_triangles[light_idx];
+
+  // sample a random point on triangle
+  var light_point: vec3f;
+  var light_normal: vec3f;
+  var area: f32;
+  sample_triangle(emissive_tri.tri_idx, emissive_tri.mesh_idx, vec2f(rand(rng), rand(rng)), &light_point, &light_normal, &area);
 
   let u_rand = rand(rng);
   let v_rand = rand(rng);
-  let light_point = l.position + (l.u * u_rand) + (l.v * v_rand);
   
   let pos_to_light = light_point - position;
   let di = length(pos_to_light);
   let wi = pos_to_light / di;
 
-  let u_x_v = cross(l.u, l.v);
-  let light_normal = normalize(u_x_v);
   let cos_light = dot(light_normal, -wi);
   let n_dot_l = dot(world_normal, wi);
 
   if (cos_light > 0.0 && n_dot_l > 0.0) {
-    let area = length(u_x_v);
-    
-    // solid angle pdf (dist^2) / (area * cos_light). 
-    let pdf_light = (di * di) / (area * cos_light * num_lights_f);
+    let pdf_light = uniform_light_sample_pdf(di, area, cos_light);
 
-    var in_shadow = false;
-    if (bool(l.ray_traced_shadows)) {
-      var shadow_ray: Ray;
-      const SHADOW_BIAS = 0.0001;
-      shadow_ray.direction = wi;
-      shadow_ray.origin = position + SHADOW_BIAS * world_normal;
+    var shadow_ray: Ray;
+    const SHADOW_BIAS = 0.0001;
+    shadow_ray.direction = wi;
+    shadow_ray.origin = position + SHADOW_BIAS * world_normal;
 
-      var shadow_hit: Hit;
-      in_shadow = ray_trace(shadow_ray, di - EPSILON, true, &shadow_hit);
-    }
+    var shadow_hit: Hit;
+    let in_shadow = ray_trace(shadow_ray, di, true, emissive_tri.tri_idx, &shadow_hit);
 
     if (!in_shadow) {
       let fr = brdf(wi, wo, world_normal, mat.albedo, mat.roughness, mat.metalness);
-      let li = l.color * l.intensity; 
-      
+
+      let light_mesh = meshes[emissive_tri.mesh_idx];
+      let light_mat = materials[light_mesh.material_idx];
+      let li = light_mat.albedo * light_mat.emission_strength;
+
       // L = (BRDF * L_i * cos(theta)) / pdf_light
-      color_response += (fr * li * n_dot_l) / pdf_light;
+      let radiance = fr * li * n_dot_l;
+      color_response += radiance / pdf_light;
     }
   }
 
@@ -925,18 +790,18 @@ fn ray_fragment_main(input: RayFragmentInput) -> @location(0) vec4f {
     var sample_color = vec3f(0.0);
 
     for (var depth = 0u; depth < scene.max_ray_depth; depth++) {
-      if (ray_trace(ray, MAX_DISTANCE, false, &hit) == true) {
+      if (ray_trace(ray, MAX_DISTANCE, false, 0xffffffffu, &hit) == true) {
         let mesh = meshes[hit.mesh_idx];
         let mat = materials[mesh.material_idx];
 
-        if (mat.material_type == 2u) {
+        if (mat.emission_strength > 0.0) {
           if (depth == 0u) {
             sample_color += mat.albedo * throughput;
           }
           break; 
         }
 
-        // MIS probabilities
+        // IS probabilities
         // high specular sampling for metals 
         // non-metals rely on roughness.
         let specular_weight = mix(1.0 - mat.roughness, 1.0, mat.metalness);
@@ -944,7 +809,7 @@ fn ray_fragment_main(input: RayFragmentInput) -> @location(0) vec4f {
         let p_diff = 1.0 - p_spec;
 
         // direct lighting
-        sample_color += shade_rt(hit, ray.direction, p_spec, p_diff, &rng).xyz * throughput;
+        sample_color += shade_rt(hit, ray.direction, &rng).xyz * throughput;
 
         var position: vec3f;
         var world_normal: vec3f;

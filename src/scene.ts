@@ -1,18 +1,22 @@
 import type { GPUAppPipeline, GPUAppBase } from "./renderer";
-import type { AreaLight, LightSource, Material, PointLight } from "./types";
+import type { LightSource, Material, PointLight } from "./types";
 import { type MeshInstance, type MergedGeometry, mergeMeshes } from "./mesh";
-import { vec3Add, vec3Normalize, vec3Cross } from "./math";
 import { createGPUBuffer } from "./utils";
 import { Camera } from "./camera";
 import { BVHTree } from "./bvh";
+
+interface EmissiveTriangle {
+  triIdx: number;
+  meshIdx: number;
+}
 
 export class Scene {
   camera: Camera;
   instances: MeshInstance[];
   materials: Material[];
 
+  emissiveTriangles: EmissiveTriangle[] = [];
   pointLights: PointLight[] = [];
-  areaLights: AreaLight[] = [];
 
   bvh?: BVHTree;
   viewBvh: boolean = false;
@@ -33,13 +37,13 @@ export class Scene {
   instanceBuffer?: GPUBuffer;
   matBuffer?: GPUBuffer;
   pointLightBuffer?: GPUBuffer;
-  areaLightBuffer?: GPUBuffer;
+  emissiveTriBuffer?: GPUBuffer;
 
   bvhDataArray?: ArrayBuffer;
   bvhBuffer?: GPUBuffer;
 
   pointLightDataArray?: ArrayBuffer;
-  areaLightDataArray?: ArrayBuffer;
+  emissiveTriDataArray?: ArrayBuffer;
 
   constructor(camera: Camera, instances: MeshInstance[], materials: Material[], lights: LightSource[]) {
     this.camera = camera;
@@ -48,40 +52,32 @@ export class Scene {
 
     for (const light of lights) {
       if (light.type === "point") this.pointLights.push(light);
-      if (light.type === "area") this.areaLights.push(light);
-    }
-
-    // create area light visualizations
-    for (const l of this.areaLights) {
-      const matIdx = this.materials.length;
-      
-      this.materials.push({
-        albedo: [l.color[0], l.color[1], l.color[2]],
-        roughness: 1.0,
-        metalness: 0.0,
-        materialType: 2, // emissive
-      });
-
-      const p0 = l.position;
-      const p1 = vec3Add(p0, l.u);
-      const p2 = vec3Add(p1, l.v);
-      const p3 = vec3Add(p0, l.v);
-
-      // normal vector
-      const n = vec3Normalize(vec3Cross(l.u, l.v));
-
-      // add as a mesh
-      this.instances.push({
-        mesh: {
-          positions: new Float32Array([...p0, ...p1, ...p2, ...p3]),
-          normals: new Float32Array([...n, ...n, ...n, ...n]),
-          indices: new Uint32Array([0, 1, 2, 0, 2, 3]),
-        },
-        materialIndex: matIdx
-      } as MeshInstance);
     }
 
     this.mergedGeometry = mergeMeshes(this.instances);
+    this.computeBVH();
+    this.extractEmissiveTriangles();
+  }
+
+  private extractEmissiveTriangles() {
+    this.emissiveTriangles = [];
+
+    for (let i = 0; i < this.instances.length; i++) {
+      const matIdx = this.instances[i].materialIndex;
+      const mat = this.materials[matIdx];
+
+      if (mat.emissionStrength && mat.emissionStrength > 0.0) {
+        const triOffset = this.mergedGeometry.instances[i * 8 + 1];
+        const triCount = this.mergedGeometry.instances[i * 8 + 2];
+
+        for (let t = 0; t < triCount; t++) {
+          this.emissiveTriangles.push({
+            triIdx: triOffset + t,
+            meshIdx: i,
+          });
+        }
+      }
+    }
   }
 
   computeBVH() {
@@ -156,13 +152,14 @@ export class Scene {
       matDataF32[offset + 3] = m.roughness;
       matDataF32[offset + 4] = m.metalness;
       matDataU32[offset + 5] = m.materialType;
-      // 6, 7 are padding
+      matDataF32[offset + 6] = m.emissionStrength;
+      // 7 is padding
     }
     this.matBuffer = createGPUBuffer(app.device, matData, storageUsage);
 
     this.packLightData();
     this.pointLightBuffer = createGPUBuffer(app.device, new Uint8Array(this.pointLightDataArray!), storageUsage);
-    this.areaLightBuffer = createGPUBuffer(app.device, new Uint8Array(this.areaLightDataArray!), storageUsage);
+    this.emissiveTriBuffer = createGPUBuffer(app.device, new Uint8Array(this.emissiveTriDataArray!), storageUsage);
 
     this.buffersInitialized = true;
   }
@@ -177,35 +174,21 @@ export class Scene {
     for (let i = 0; i < this.pointLights.length; i++) {
       const l = this.pointLights[i];
       const offset = i * 8;
-
       pF32View.set(l.position, offset);
       pF32View[offset + 3] = l.intensity;
-
       pF32View.set(l.color, offset + 4);
       pU32View[offset + 7] = l.rayTracedShadows;
     }
 
-    // area lights (16 floats/u32s = 64 bytes each)
-    const numAreaLights = Math.max(1, this.areaLights.length); // at least allocate 1
-    this.areaLightDataArray = new ArrayBuffer(numAreaLights * 16 * 4);
-    const aF32View = new Float32Array(this.areaLightDataArray);
-    const aU32View = new Uint32Array(this.areaLightDataArray);
+    // emissive triangles (2 u32s = 8 bytes each)
+    const numEmissive = Math.max(1, this.emissiveTriangles.length);
+    this.emissiveTriDataArray = new ArrayBuffer(numEmissive * 2 * 4);
+    const eU32View = new Uint32Array(this.emissiveTriDataArray);
 
-    for (let i = 0; i < this.areaLights.length; i++) {
-      const l = this.areaLights[i];
-      const offset = i * 16;
-
-      aF32View.set(l.position, offset);
-      aF32View[offset + 3] = l.intensity;
-
-      aF32View.set(l.color, offset + 4);
-      aU32View[offset + 7] = l.rayTracedShadows;
-
-      aF32View.set(l.u, offset + 8);
-      aF32View[offset + 11] = 0.0; // padding
-
-      aF32View.set(l.v, offset + 12);
-      aF32View[offset + 15] = 0.0; // padding
+    for (let i = 0; i < this.emissiveTriangles.length; i++) {
+      const offset = i * 2;
+      eU32View[offset] = this.emissiveTriangles[i].triIdx;
+      eU32View[offset + 1] = this.emissiveTriangles[i].meshIdx;
     }
   }
 
@@ -227,6 +210,7 @@ export class Scene {
       matDataF32[offset + 3] = m.roughness;
       matDataF32[offset + 4] = m.metalness;
       matDataU32[offset + 5] = m.materialType;
+      matDataF32[offset + 6] = m.emissionStrength;
     }
 
     app.device.queue.writeBuffer(this.matBuffer!, 0, matData);
@@ -254,8 +238,8 @@ export class Scene {
     f32View[84] = app.canvas.width;
     f32View[85] = app.canvas.height;
     f32View[86] = this.instances.length;
-    f32View[87] = this.pointLights.length;
-    f32View[88] = this.areaLights.length;
+    u32View[87] = this.pointLights.length;
+    u32View[88] = this.emissiveTriangles.length;
     u32View[89] = new Uint32Array([Date.now()])[0]; // take only LSB
     u32View[90] = this.frameCount;
     u32View[91] = 0; // padding
@@ -270,6 +254,6 @@ export class Scene {
     // repack and upload it again
     this.packLightData();
     app.device.queue.writeBuffer(this.pointLightBuffer!, 0, this.pointLightDataArray!);
-    app.device.queue.writeBuffer(this.areaLightBuffer!, 0, this.areaLightDataArray!);
+    app.device.queue.writeBuffer(this.emissiveTriBuffer!, 0, this.emissiveTriDataArray!);
   }
 }

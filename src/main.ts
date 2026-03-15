@@ -7,7 +7,7 @@ import type { Material, LightSource } from "./types";
 import { type Vec3 } from "./math";
 import { Camera } from "./camera";
 import { Scene } from "./scene";
-import { type MeshInstance, createBox, createQuad, createSphere } from "./mesh";
+import { type MeshInstance, createBox, createQuad, createSphere, createCylinder } from "./mesh";
 
 const ui = {
   canvas: document.querySelector("canvas") as HTMLCanvasElement,
@@ -167,23 +167,15 @@ function createCornellBox(): SceneData {
   const camera = new Camera([0.0, 0.6, 1.75], camAspect);
 
   const materials: Material[] = [
-    { albedo: [0.9, 0.9, 0.9], roughness: 1.0, metalness: 0.0, materialType: 0 }, // white wall
-    { albedo: [0.9, 0.0, 0.0], roughness: 1.0, metalness: 0.0, materialType: 0 }, // red wall
-    { albedo: [0.0, 0.9, 0.0], roughness: 1.0, metalness: 0.0, materialType: 0 }, // green wall
-    { albedo: hexToSRGB(ui.albedoPicker.value), roughness: 1.0, metalness: 0.0, materialType: 0 } // main object material
+    { albedo: [0.9, 0.9, 0.9], roughness: 1.0, metalness: 0.0, materialType: 0, emissionStrength: 0 }, // white wall
+    { albedo: [0.9, 0.0, 0.0], roughness: 1.0, metalness: 0.0, materialType: 0, emissionStrength: 0 }, // red wall
+    { albedo: [0.0, 0.9, 0.0], roughness: 1.0, metalness: 0.0, materialType: 0, emissionStrength: 0 }, // green wall
+    { albedo: hexToSRGB(ui.albedoPicker.value), roughness: 1.0, metalness: 0.0, materialType: 0, emissionStrength: 0 },
+    { albedo: [1.0, 1.0, 1.0], roughness: 0.0, metalness: 0.0, materialType: 2, emissionStrength: 50 }, // area light
   ];
 
   const lights: LightSource[] = [
     { type: "point", position: [0.0, 0.99, -0.1], intensity: 1.5, color: [1.0, 1.0, 1.0], rayTracedShadows: 1 },
-    {
-      type: "area",
-      position: [-0.1, 0.99, -0.1],
-      intensity: 40,
-      u: [0.2, 0.0, 0.0],
-      v: [0.0, 0.0, 0.2],
-      color: [1.0, 1.0, 1.0],
-      rayTracedShadows: 1
-    },
   ];
 
   const instances: MeshInstance[] = [
@@ -195,6 +187,7 @@ function createCornellBox(): SceneData {
     { mesh: createSphere([-0.3, 0.15, 0.3], 0.15, 32, 32), materialIndex: 3 },
     { mesh: createBox([-0.15, 0.0, -0.35], 0.3, 0.575, 0.3, Math.PI / 3), materialIndex: 3 },
     { mesh: createBox([0.1, 0.0, -0.05], 0.3, 0.3, 0.3, Math.PI / 9), materialIndex: 3 },
+    { mesh: createQuad([-0.1, 0.99, -0.1], [0.2, 0.0, 0.0], [0.0, 0.0, 0.2]), materialIndex: 4 },
   ];
 
   return [camera, materials, lights, instances];
@@ -207,7 +200,6 @@ async function main() {
   const [ camera, materials, lights, instances ] = createCornellBox();
 
   const scene = new Scene(camera, instances, materials, lights);
-  scene.computeBVH();
   scene.createBuffers(pipelineApp);
   initEvents(pipelineApp, scene);
 

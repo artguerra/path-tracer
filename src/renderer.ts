@@ -228,7 +228,7 @@ export function buildSceneBindGroups(app: GPUAppPipeline, scene: Scene): GPUApp 
     layout: app.lightBindGroupLayout,
     entries: [
       { binding: 0, resource: { buffer: scene.pointLightBuffer! } },
-      { binding: 1, resource: { buffer: scene.areaLightBuffer! } },
+      { binding: 1, resource: { buffer: scene.emissiveTriBuffer! } },
     ],
   });
 
