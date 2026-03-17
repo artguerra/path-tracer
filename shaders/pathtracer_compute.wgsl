@@ -101,9 +101,10 @@ struct Hit {
 
 struct LightCandidate {
   emissive_idx: u32,
+  sample_uv: vec2<f32>, // barycentrics u,v ; w = 1-u-v
   light_point: vec3f,
-  light_normal: vec3f,
   area: f32,
+  light_normal: vec3f,
   p_source: f32, // source PDF (in area measure) -> p(x) on the paper
 }
 
@@ -125,16 +126,21 @@ struct Reservoir {
 
 // one primary visible surface per pixel
 struct PrimarySurface {
-  position_depth: vec4f, // xyz = world position, w = camera distance
-  normal_pad: vec4f, // xyz = world normal
-  metadata: vec4<u32>, // x = material_idx, y = valid, z = mesh_idx, w = tri_idx
+  pos: vec3<f32>,
+  cam_dist: f32,
+  normal: vec3<f32>,
+  tri_idx: u32,
+  mesh_idx: u32,
+  valid: u32,
 }
 
 // stored reservoir to be reused
 struct StoredReservoir {
-  light_point_w: vec4f, // xyz = sampled light point, w = final_w
-  light_normal_pad: vec4f, // xyz = sampled light normal
-  metadata: vec4<u32>, // x = emissive_idx, y = M, z = valid, w = reserved
+  y: u32, // chosen emissive triangle index
+  final_w: f32, // W
+  sample_uv: vec2<f32>, // barycentric coords of chosen triangle. u, v, w = 1-u-v
+  M: u32,
+  valid: u32,
 }
 
 // ----------------------------------------------------------------------------
@@ -207,39 +213,6 @@ fn luminance(c: vec3f) -> f32 {
 fn pixel_index(pixel: vec2<u32>) -> u32 {
   return pixel.x + pixel.y * u32(scene.canvas_width);
 }
-
-fn invalid_primary_surface() -> PrimarySurface {
-  return PrimarySurface(
-    vec4f(0.0, 0.0, 0.0, 0.0),
-    vec4f(0.0, 0.0, 0.0, 0.0),
-    vec4<u32>(0u, 0u, 0u, 0u)
-  );
-}
-
-fn invalid_stored_reservoir() -> StoredReservoir {
-  return StoredReservoir(
-    vec4f(0.0, 0.0, 0.0, 0.0),
-    vec4f(0.0, 0.0, 0.0, 0.0),
-    vec4<u32>(0u, 0u, 0u, 0u)
-  );
-}
-
-fn primary_surface_valid(s: PrimarySurface) -> bool {
-  return s.metadata.y != 0u;
-}
-
-fn stored_from_local_reservoir(res: Reservoir) -> StoredReservoir {
-  if (res.final_w <= 0.0 || res.m == 0u) {
-    return invalid_stored_reservoir();
-  }
-
-  return StoredReservoir(
-    vec4f(res.sample.light_point, res.final_w),
-    vec4f(res.sample.light_normal, 0.0),
-    vec4<u32>(res.sample.emissive_idx, res.m, 1u, 0u)
-  );
-}
-
 
 // ----------------------------------------------------------------------------
 // RNGs
@@ -561,92 +534,6 @@ fn get_hit_vectors(hit: Hit, hit_pos: ptr<function, vec3f>, hit_normal: ptr<func
   ));
 }
 
-// ----------------------------------------------------------------------------
-// ReSTIR
-// ----------------------------------------------------------------------------
-
-fn sample_triangle(
-  tri_idx: u32, 
-  mesh_idx: u32, 
-  s: vec2f, 
-  pos: ptr<function, vec3f>, 
-  normal: ptr<function, vec3f>, 
-  area: ptr<function, f32>
-) {
-  let mesh = meshes[mesh_idx];
-  let tri = get_triangle(tri_idx);
-
-  let p0 = get_vert_pos(mesh.pos_offset + tri.x);
-  let p1 = get_vert_pos(mesh.pos_offset + tri.y);
-  let p2 = get_vert_pos(mesh.pos_offset + tri.z);
-
-  // uniform barycentric sampling
-  let sqrt_r1 = sqrt(s.x);
-  let u = 1.0 - sqrt_r1;
-  let v = s.y * sqrt_r1;
-  let w = 1.0 - u - v;
-
-  *pos = u * p0 + v * p1 + w * p2;
-
-  // area and normal
-  let edge1 = p1 - p0;
-  let edge2 = p2 - p0;
-  let cross = cross(edge1, edge2);
-  
-  *area = 0.5 * length(cross);
-  *normal = normalize(cross);
-}
-
-// uniform light sampling
-fn sample_light_uniform(u: f32) -> u32 {
-  let n = scene.num_emissive_triangles;
-  let light_idx = min(u32(u * f32(n)), n - 1u);
-  return light_idx;
-}
-
-fn uniform_light_sample_pdf(area: f32) -> f32 {
-  // uniform pdf in area measure
-  let pdf = 1.0 / (area * f32(scene.num_emissive_triangles));
-  return pdf;
-}
-
-fn update_reservoir(
-  xi: LightCandidate, // new sample
-  wi: f32, // weight associated to xi
-  res: ptr<function, Reservoir>, // the reservoir to update
-  u: f32 // uniform random variable
-) {
-  (*res).m++;
-  (*res).w_sum += wi;
-
-  if (wi > 0.0) {
-    let choosing_prob = wi / (*res).w_sum;
-    if (u < choosing_prob) {
-      (*res).sample = xi;
-    }
-  }
-}
-
-fn sample_light_candidate_uniform(rng: ptr<function, RngState>) -> LightCandidate {
-  let emissive_idx = sample_light_uniform(rand(rng));
-  let emissive_tri = emissive_triangles[emissive_idx];
-
-  var light_point: vec3f;
-  var light_normal: vec3f;
-  var area: f32;
-  sample_triangle(
-    emissive_tri.tri_idx,
-    emissive_tri.mesh_idx,
-    vec2f(rand(rng), rand(rng)),
-    &light_point,
-    &light_normal,
-    &area
-  );
-
-  let p_source = uniform_light_sample_pdf(area);
-  return LightCandidate(emissive_idx, light_point, light_normal, area, p_source);
-}
-
 fn evaluate_light_candidate(
   position: vec3f,
   normal: vec3f,
@@ -686,6 +573,138 @@ fn evaluate_light_candidate(
   return LightEval(f_unshadowed, p_hat);
 }
 
+// ----------------------------------------------------------------------------
+// ReSTIR
+// ----------------------------------------------------------------------------
+
+// ---------------------- reservoir related helpers ----------------------
+
+fn invalid_primary_surface() -> PrimarySurface {
+  return PrimarySurface(vec3f(0.0), 0.0, vec3f(0.0), 0u, 0u, 0u);
+}
+
+fn invalid_stored_reservoir() -> StoredReservoir {
+  return StoredReservoir(0u, 0.0, vec2f(0.0), 0u, 0u);
+}
+
+fn primary_surface_valid(s: PrimarySurface) -> bool {
+  return s.valid != 0u;
+}
+
+fn stored_reservoir_valid(r: StoredReservoir) -> bool {
+  return r.valid != 0u && r.M > 0u && r.final_w > 0.0;
+}
+
+fn stored_from_local_reservoir(res: Reservoir) -> StoredReservoir {
+  if (res.final_w <= 0.0 || res.m == 0u) {
+    return invalid_stored_reservoir();
+  }
+
+  return StoredReservoir(
+    res.sample.emissive_idx,
+    res.final_w,
+    res.sample.sample_uv,
+    res.m,
+    1u
+  );
+}
+
+fn update_reservoir(
+  xi: LightCandidate, // new sample
+  wi: f32, // weight associated to xi
+  res: ptr<function, Reservoir>, // the reservoir to update
+  u: f32 // uniform random variable
+) {
+  (*res).m++;
+  (*res).w_sum += wi;
+
+  if (wi > 0.0) {
+    let choosing_prob = wi / (*res).w_sum;
+    if (u < choosing_prob) {
+      (*res).sample = xi;
+    }
+  }
+}
+
+// ----------------------- sampling -----------------------
+
+fn sample_triangle_uv(s: vec2f) -> vec2f {
+  // uniform barycentric sampling
+  let sqrt_r1 = sqrt(s.x);
+  let u = 1.0 - sqrt_r1;
+  let v = s.y * sqrt_r1;
+  return vec2f(u, v);
+}
+
+// get geometric information from a triangle from its idx and barycentric coords
+fn reconstruct_triangle_sample(
+  tri_idx: u32,
+  mesh_idx: u32,
+  sample_uv: vec2f,
+  pos: ptr<function, vec3f>,
+  normal: ptr<function, vec3f>,
+  area: ptr<function, f32>
+) {
+  let mesh = meshes[mesh_idx];
+  let tri = get_triangle(tri_idx);
+
+  let p0 = get_vert_pos(mesh.pos_offset + tri.x);
+  let p1 = get_vert_pos(mesh.pos_offset + tri.y);
+  let p2 = get_vert_pos(mesh.pos_offset + tri.z);
+
+  let u = sample_uv.x;
+  let v = sample_uv.y;
+  let w = 1.0 - u - v;
+
+  *pos = u * p0 + v * p1 + w * p2;
+
+  let edge1 = p1 - p0;
+  let edge2 = p2 - p0;
+  let n = cross(edge1, edge2);
+
+  *area = 0.5 * length(n);
+  *normal = normalize(n);
+}
+
+fn reconstruct_light_sample(
+  emissive_idx: u32,
+  sample_uv: vec2f,
+  pos: ptr<function, vec3f>,
+  normal: ptr<function, vec3f>,
+  area: ptr<function, f32>
+) {
+  let emissive_tri = emissive_triangles[emissive_idx];
+  reconstruct_triangle_sample(
+    emissive_tri.tri_idx, emissive_tri.mesh_idx, sample_uv, pos, normal, area
+  );
+}
+
+// uniform light sampling
+fn sample_light_uniform(u: f32) -> u32 {
+  let n = scene.num_emissive_triangles;
+  let light_idx = min(u32(u * f32(n)), n - 1u);
+  return light_idx;
+}
+
+fn uniform_light_sample_pdf(area: f32) -> f32 {
+  // uniform pdf in area measure
+  let pdf = 1.0 / (area * f32(scene.num_emissive_triangles));
+  return pdf;
+}
+
+fn sample_light_candidate_uniform(rng: ptr<function, RngState>) -> LightCandidate {
+  let emissive_idx = sample_light_uniform(rand(rng));
+  let sample_uv = sample_triangle_uv(vec2f(rand(rng), rand(rng)));
+
+  var light_point: vec3f;
+  var light_normal: vec3f;
+  var area: f32;
+  reconstruct_light_sample(emissive_idx, sample_uv, &light_point, &light_normal, &area);
+
+  let p_source = uniform_light_sample_pdf(area);
+  return LightCandidate(emissive_idx, sample_uv, light_point, area, light_normal, p_source);
+}
+
 fn sample_light_ris(
   position: vec3f,
   wo: vec3f,
@@ -716,6 +735,8 @@ fn sample_light_ris(
 
   return res;
 }
+
+// ----------------------- shading -----------------------
 
 fn trace_light_visibility(
   position: vec3f,
@@ -791,7 +812,6 @@ fn visibility_main(@builtin(global_invocation_id) gid: vec3<u32>) {
   // default to invalid
   primary_surfaces_curr[idx] = invalid_primary_surface();
 
-  // ReSTIR disabled -> okay to leave this invalid
   if (scene.restir_enabled == 0u) {
     return;
   }
@@ -801,7 +821,6 @@ fn visibility_main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
   var ray = ray_at(uv, scene.camera);
   var hit: Hit;
-
   if (!ray_trace(ray, MAX_DISTANCE, false, 0xffffffffu, &hit)) {
     return;
   }
@@ -821,12 +840,9 @@ fn visibility_main(@builtin(global_invocation_id) gid: vec3<u32>) {
   let cam_dist = length(cam_world_pos - position);
 
   primary_surfaces_curr[idx] = PrimarySurface(
-    vec4f(position, cam_dist),
-    vec4f(normalize(world_normal), 0.0),
-    vec4<u32>(mesh.material_idx, 1u, hit.mesh_idx, hit.tri_idx)
+    position, cam_dist, normalize(world_normal), hit.tri_idx, hit.mesh_idx, 1u,
   );
 }
-
 
 // -------------------------- RIS pass --------------------------
 
@@ -855,9 +871,9 @@ fn initial_ris_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     return;
   }
 
-  let position = surface.position_depth.xyz;
-  let world_normal = normalize(surface.normal_pad.xyz);
-  let mat = materials[surface.metadata.x];
+  let position = surface.pos;
+  let world_normal = surface.normal;
+  let mat = materials[meshes[surface.mesh_idx].material_idx];
 
   let cam_world_pos = scene.camera.inv_view_mat[3].xyz;
   let wo = normalize(cam_world_pos - position);
@@ -865,7 +881,6 @@ fn initial_ris_main(@builtin(global_invocation_id) gid: vec3<u32>) {
   var rng = init_rng(idx + scene.timestamp * 719393u);
 
   let res = sample_light_ris(position, wo, world_normal, mat, &rng);
-
   reservoirs_initial_curr[idx] = stored_from_local_reservoir(res);
 }
 
@@ -885,6 +900,7 @@ fn visibility_reuse_main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
   let surface = primary_surfaces_curr[idx];
   if (!primary_surface_valid(surface)) {
+    reservoirs_initial_curr[idx] = invalid_stored_reservoir();
     return;
   }
 
@@ -895,27 +911,20 @@ fn visibility_reuse_main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
   let candidate = candidate_from_stored(stored_res);
 
-  let pos = surface.position_depth.xyz;
-  let normal = surface.normal_pad.xyz;
-  if (!trace_light_visibility(pos, normal, candidate)) {
+  if (!trace_light_visibility(surface.pos, surface.normal, candidate)) {
     reservoirs_initial_curr[idx] = invalid_stored_reservoir();
   }
 }
 
 // -------------------------- path tracing pass --------------------------
 
-fn stored_reservoir_valid(r: StoredReservoir) -> bool {
-  return (r.metadata.z != 0u) && (r.metadata.y > 0u) && (r.light_point_w.w > 0.0);
-}
-
 fn candidate_from_stored(r: StoredReservoir) -> LightCandidate {
-  return LightCandidate(
-    r.metadata.x,
-    r.light_point_w.xyz,
-    normalize(r.light_normal_pad.xyz),
-    0.0,
-    0.0
-  );
+  var light_point: vec3f;
+  var light_normal: vec3f;
+  var area: f32;
+  reconstruct_light_sample(r.y, r.sample_uv, &light_point, &light_normal, &area);
+
+  return LightCandidate(r.y, r.sample_uv, light_point, area, light_normal, 0.0);
 }
 
 // uses the reservoir generated in previous passes
@@ -939,12 +948,13 @@ fn shade_primary_from_stored_reservoir(
   let wo = normalize(-incoming_ray_dir);
   let candidate = candidate_from_stored(r);
 
+  // if SPP > 1 maybe its better to keep this? (reservoir may be occluded)
   // if (!trace_light_visibility(position, world_normal, candidate)) {
   //   return vec3f(0.0);
   // }
 
   let eval = evaluate_light_candidate(position, world_normal, wo, mat, candidate);
-  return eval.f_unshadowed * r.light_point_w.w;
+  return eval.f_unshadowed * r.final_w;
 }
 
 @compute @workgroup_size(8, 8, 1)
