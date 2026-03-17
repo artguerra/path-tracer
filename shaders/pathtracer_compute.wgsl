@@ -869,7 +869,40 @@ fn initial_ris_main(@builtin(global_invocation_id) gid: vec3<u32>) {
   reservoirs_initial_curr[idx] = stored_from_local_reservoir(res);
 }
 
-// -------------------------- path tracing --------------------------
+// -------------------------- visibility reuse pass --------------------------
+
+@compute @workgroup_size(8, 8, 1)
+fn visibility_reuse_main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let width = u32(scene.canvas_width);
+  let height = u32(scene.canvas_height);
+
+  if (gid.x >= width || gid.y >= height) {
+    return;
+  }
+
+  let pixel = vec2u(gid.xy);
+  let idx = pixel_index(pixel);
+
+  let surface = primary_surfaces_curr[idx];
+  if (!primary_surface_valid(surface)) {
+    return;
+  }
+
+  let stored_res = reservoirs_initial_curr[idx];
+  if (!stored_reservoir_valid(stored_res)) {
+    return;
+  }
+
+  let candidate = candidate_from_stored(stored_res);
+
+  let pos = surface.position_depth.xyz;
+  let normal = surface.normal_pad.xyz;
+  if (!trace_light_visibility(pos, normal, candidate)) {
+    reservoirs_initial_curr[idx] = invalid_stored_reservoir();
+  }
+}
+
+// -------------------------- path tracing pass --------------------------
 
 fn stored_reservoir_valid(r: StoredReservoir) -> bool {
   return (r.metadata.z != 0u) && (r.metadata.y > 0u) && (r.light_point_w.w > 0.0);
@@ -885,7 +918,7 @@ fn candidate_from_stored(r: StoredReservoir) -> LightCandidate {
   );
 }
 
-// uses the reservoir generated in initial_ris_main.
+// uses the reservoir generated in previous passes
 fn shade_primary_from_stored_reservoir(
   hit: Hit,
   incoming_ray_dir: vec3f,
@@ -906,10 +939,9 @@ fn shade_primary_from_stored_reservoir(
   let wo = normalize(-incoming_ray_dir);
   let candidate = candidate_from_stored(r);
 
-  // keep the visibility test here for now 
-  if (!trace_light_visibility(position, world_normal, candidate)) {
-    return vec3f(0.0);
-  }
+  // if (!trace_light_visibility(position, world_normal, candidate)) {
+  //   return vec3f(0.0);
+  // }
 
   let eval = evaluate_light_candidate(position, world_normal, wo, mat, candidate);
   return eval.f_unshadowed * r.light_point_w.w;
@@ -920,7 +952,7 @@ fn shade_pathtrace_main(@builtin(global_invocation_id) gid: vec3<u32>) {
   let width = u32(scene.canvas_width);
   let height = u32(scene.canvas_height);
 
-  if (gid.x > width || gid.y > height) {
+  if (gid.x >= width || gid.y >= height) {
     return;
   }
 

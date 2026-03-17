@@ -31,6 +31,7 @@ export interface GPUAppPipeline extends GPUAppBase {
 
   visibilityPipeline: GPUComputePipeline;
   initialRisPipeline: GPUComputePipeline;
+  visibilityReusePipeline: GPUComputePipeline;
   shadePathtracePipeline: GPUComputePipeline;
 
   sceneBindGroupLayout: GPUBindGroupLayout;
@@ -207,6 +208,15 @@ export function initRenderPipeline(app: GPUAppBase): GPUAppPipeline {
     },
   });
 
+  const visibilityReusePipeline = app.device.createComputePipeline({
+    label: "visibility reuse compute pipeline",
+    layout: computePipelineLayout,
+    compute: {
+      module: pathtracerComputeShaderModule,
+      entryPoint: "visibility_reuse_main",
+    },
+  });
+
   const shadePathtracePipeline = app.device.createComputePipeline({
     label: "shade/pathtrace compute pipeline",
     layout: computePipelineLayout,
@@ -278,7 +288,7 @@ export function initRenderPipeline(app: GPUAppBase): GPUAppPipeline {
     primarySurfaceBuffer, reservoirInitialBuffer,
     sceneBindGroupLayout, geometryBindGroupLayout, lightBindGroupLayout, restirBindGroupLayout, displayBindGroupLayout,
     rasterPipeline, displayPathtracingPipeline, wireframePipeline,
-    visibilityPipeline, initialRisPipeline, shadePathtracePipeline,
+    visibilityPipeline, initialRisPipeline, visibilityReusePipeline, shadePathtracePipeline,
   };
 }
 
@@ -380,6 +390,9 @@ export function render(app: GPUApp, scene: Scene, useRaytracing: boolean): void 
     computePass.dispatchWorkgroups(workgroupCountX, workgroupCountY);
 
     computePass.setPipeline(app.initialRisPipeline);
+    computePass.dispatchWorkgroups(workgroupCountX, workgroupCountY);
+
+    computePass.setPipeline(app.visibilityReusePipeline);
     computePass.dispatchWorkgroups(workgroupCountX, workgroupCountY);
 
     computePass.setPipeline(app.shadePathtracePipeline);

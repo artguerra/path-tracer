@@ -25,7 +25,7 @@ export class Scene {
   toneMappingEnabled: boolean = false;
   restirEnabled: boolean = true;
   accumulationEnabled: boolean = true;
-  stratifiedGridSize: number = 2;
+  stratifiedGridSize: number = 1;
   maxRayDepth: number = 3;
   frameCount: number = 0.0;
 
