@@ -181,9 +181,12 @@ var<storage, read> emissive_triangles: array<EmissiveTriangle>;
 var<storage, read_write> primary_surfaces_curr: array<PrimarySurface>;
 
 @group(3) @binding(1)
-var<storage, read_write> reservoirs_initial_curr: array<StoredReservoir>;
+var<storage, read_write> reservoirs_curr: array<StoredReservoir>;
 
 @group(3) @binding(2)
+var<storage, read_write> reservoirs_prev: array<StoredReservoir>;
+
+@group(3) @binding(3)
 var pathtrace_output: texture_storage_2d<rgba32float, write>;
 
 // ----------------------------------------------------------------------------
@@ -595,7 +598,7 @@ fn primary_surface_valid(s: PrimarySurface) -> bool {
 }
 
 fn stored_reservoir_valid(r: StoredReservoir) -> bool {
-  return r.valid != 0u && r.M > 0u && r.final_w > 0.0;
+  return r.valid != 0u && r.M > 0u;
 }
 
 fn stored_from_local_reservoir(res: Reservoir) -> StoredReservoir {
@@ -863,7 +866,7 @@ fn initial_ris_main(@builtin(global_invocation_id) gid: vec3<u32>) {
   let pixel = vec2<u32>(gid.xy);
   let idx = pixel_index(pixel);
 
-  reservoirs_initial_curr[idx] = invalid_stored_reservoir();
+  reservoirs_curr[idx] = invalid_stored_reservoir();
 
   if (scene.restir_enabled == 0u || scene.num_emissive_triangles == 0u) {
     return;
@@ -884,7 +887,7 @@ fn initial_ris_main(@builtin(global_invocation_id) gid: vec3<u32>) {
   var rng = init_rng(idx + scene.timestamp * 719393u);
 
   let res = sample_light_ris(position, wo, world_normal, mat, &rng);
-  reservoirs_initial_curr[idx] = stored_from_local_reservoir(res);
+  reservoirs_curr[idx] = stored_from_local_reservoir(res);
 }
 
 // -------------------------- visibility reuse pass --------------------------
@@ -903,11 +906,11 @@ fn visibility_reuse_main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
   let surface = primary_surfaces_curr[idx];
   if (!primary_surface_valid(surface)) {
-    reservoirs_initial_curr[idx] = invalid_stored_reservoir();
+    reservoirs_curr[idx] = invalid_stored_reservoir();
     return;
   }
 
-  let stored_res = reservoirs_initial_curr[idx];
+  let stored_res = reservoirs_curr[idx];
   if (!stored_reservoir_valid(stored_res)) {
     return;
   }
@@ -915,8 +918,108 @@ fn visibility_reuse_main(@builtin(global_invocation_id) gid: vec3<u32>) {
   let candidate = candidate_from_stored(stored_res);
 
   if (!trace_light_visibility(surface.pos, surface.normal, candidate)) {
-    reservoirs_initial_curr[idx] = invalid_stored_reservoir();
+    reservoirs_curr[idx].final_w = 0.0;
   }
+}
+
+// -------------------------- temporal reuse pass --------------------------
+
+fn stored_target_p_hat(surface: PrimarySurface, r: StoredReservoir) -> f32 {
+  if (!stored_reservoir_valid(r)) {
+    return 0.0;
+  }
+
+  let candidate = candidate_from_stored(r);
+  let mat = materials[meshes[surface.mesh_idx].material_idx];
+  let cam_world_pos = scene.camera.inv_view_mat[3].xyz;
+  let wo = normalize(cam_world_pos - surface.pos);
+
+  let eval = evaluate_light_candidate(surface.pos, surface.normal, wo, mat, candidate);
+
+  return eval.p_hat;
+}
+
+@compute @workgroup_size(8, 8, 1)
+fn temporal_reuse_main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let width = u32(scene.canvas_width);
+  let height = u32(scene.canvas_height);
+
+  if (gid.x >= width || gid.y >= height) {
+    return;
+  }
+
+  let pixel = vec2u(gid.xy);
+  let idx = pixel_index(pixel);
+
+  let surface = primary_surfaces_curr[idx];
+  if (!primary_surface_valid(surface)) {
+    reservoirs_curr[idx] = invalid_stored_reservoir();
+    return;
+  }
+
+  let cur_res = reservoirs_curr[idx];
+  let prev_res = reservoirs_prev[idx]; // assuming camera doesnt move
+
+  // first frame, nothing to reuse yet
+  if (scene.frame_count <= 1u) {
+    return;
+  }
+
+  var rng = init_rng(idx + scene.timestamp * 719393u);
+
+  var combined = invalid_stored_reservoir();
+  var w_sum = 0.0;
+  var m_sum = 0u;
+
+  // current reservoir contribution
+  if (stored_reservoir_valid(cur_res)) {
+    m_sum += cur_res.M;
+
+    let p_hat = stored_target_p_hat(surface, cur_res);
+    let w = p_hat * cur_res.final_w * f32(cur_res.M);
+
+    if (w > 0.0) {
+      w_sum += w;
+      if (rand(&rng) < (w / w_sum)) {
+        combined = cur_res;
+      }
+    }
+  }
+
+  // previous frame contribution (same pixel for now, considering camera is static)
+  if (stored_reservoir_valid(prev_res)) {
+    let current_m_for_clamp = select(1u, max(1u, cur_res.M), stored_reservoir_valid(cur_res));
+    let prev_m = min(prev_res.M, 20u * current_m_for_clamp);
+
+    m_sum += prev_m;
+
+    let p_hat = stored_target_p_hat(surface, prev_res);
+    let w = p_hat * prev_res.final_w * f32(prev_m);
+
+    if (w > 0.0) {
+      w_sum += w;
+      if (rand(&rng) < (w / w_sum)) {
+        combined = prev_res;
+      }
+    }
+  }
+
+  // if (m_sum == 0u || w_sum <= 0.0 || combined.valid == 0u) {
+  //   reservoirs_curr[idx] = invalid_stored_reservoir();
+  //   return;
+  // }
+
+  let selected_p_hat = stored_target_p_hat(surface, combined);
+  if (selected_p_hat <= 0.0) {
+    reservoirs_curr[idx] = invalid_stored_reservoir();
+    return;
+  }
+
+  combined.M = m_sum;
+  combined.final_w = w_sum / (f32(m_sum) * selected_p_hat);
+  combined.valid = 1u;
+
+  reservoirs_curr[idx] = combined;
 }
 
 // -------------------------- path tracing pass --------------------------
@@ -936,7 +1039,7 @@ fn shade_primary_from_stored_reservoir(
   incoming_ray_dir: vec3f,
   pixel_idx: u32
 ) -> vec3f {
-  let r = reservoirs_initial_curr[pixel_idx];
+  let r = reservoirs_curr[pixel_idx];
   if (!stored_reservoir_valid(r)) {
     return vec3f(0.0);
   }
@@ -952,9 +1055,9 @@ fn shade_primary_from_stored_reservoir(
   let candidate = candidate_from_stored(r);
 
   // if SPP > 1 maybe its better to keep this? (reservoir may be occluded)
-  // if (!trace_light_visibility(position, world_normal, candidate)) {
-  //   return vec3f(0.0);
-  // }
+  if (!trace_light_visibility(position, world_normal, candidate)) {
+    return vec3f(0.0);
+  }
 
   let eval = evaluate_light_candidate(position, world_normal, wo, mat, candidate);
   return eval.f_unshadowed * r.final_w;
@@ -1016,7 +1119,8 @@ fn shade_pathtrace_main(@builtin(global_invocation_id) gid: vec3<u32>) {
         if (
           depth == 0u &&
           scene.restir_enabled != 0u &&
-          stored_reservoir_valid(reservoirs_initial_curr[idx])
+          stored_reservoir_valid(reservoirs_curr[idx]) &&
+          reservoirs_curr[idx].final_w > 0.0
         ) {
           sample_color += shade_primary_from_stored_reservoir(hit, ray.direction, idx) * throughput;
         } else {
