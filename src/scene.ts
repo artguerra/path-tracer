@@ -24,6 +24,7 @@ export class Scene {
   toneMappingEnabled: boolean = false;
   restirEnabled: boolean = true;
   useRISOnBounces: boolean = true;
+  restirBiased: boolean = true;
   accumulationEnabled: boolean = true;
   stratifiedGridSize: number = 1;
   maxRayDepth: number = 3;
@@ -136,7 +137,7 @@ export class Scene {
     this.bvhBuffer = createGPUBuffer(app.device, this.bvhDataArray!, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST);
 
     this.uniformBuffer = app.device.createBuffer({
-      size: 96 * 4, // 96 floats in scene struct in shader
+      size: 100 * 4, // 100 floats in scene struct in shader
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
 
@@ -197,7 +198,7 @@ export class Scene {
   updateGPU(app: GPUAppPipeline) {
     if (!this.buffersInitialized) return;
 
-    const sceneData = new ArrayBuffer(96 * 4);
+    const sceneData = new ArrayBuffer(100 * 4);
     const f32View = new Float32Array(sceneData);
     const u32View = new Uint32Array(sceneData);
 
@@ -225,6 +226,10 @@ export class Scene {
     u32View[93] = this.stratifiedGridSize;
     u32View[94] = +this.restirEnabled;
     u32View[95] = +this.useRISOnBounces;
+    u32View[96] = +this.restirBiased;
+    u32View[97] = 0;
+    u32View[98] = 0;
+    u32View[999] = 0;
 
     app.device.queue.writeBuffer(this.uniformBuffer!, 0, sceneData);
   }

@@ -22,6 +22,7 @@ const ui = {
   metalnessSlider: document.querySelector("#metalness") as HTMLInputElement,
   toneMappingCheck: document.querySelector("#toneMappingCheckbox") as HTMLInputElement,
   restirCheck: document.querySelector("#restirCheckbox") as HTMLInputElement,
+  restirBiasedCheck: document.querySelector("#restirBiasedCheckbox") as HTMLInputElement,
   risOnBouncesCheck: document.querySelector("#risOnBouncesCheckbox") as HTMLInputElement,
   accumulationCheck: document.querySelector("#accumulationCheckbox") as HTMLInputElement,
   sceneSelect: document.getElementById("sceneSelect") as HTMLSelectElement,
@@ -117,6 +118,18 @@ function initEvents() {
 
   ui.restirCheck.addEventListener("input", () => {
     state.scene.restirEnabled = ui.restirCheck.checked;
+
+    if (ui.restirCheck.checked) {
+      ui.stratifiedGridSlider.value = "1";
+      state.scene.stratifiedGridSize = 1;
+      ui.sppText.innerText = "1";
+    }
+
+    state.scene.frameCount = 0.0;
+  });
+
+  ui.restirBiasedCheck.addEventListener("input", () => {
+    state.scene.restirBiased = ui.restirBiasedCheck.checked;
     state.scene.frameCount = 0.0;
   });
 
@@ -249,8 +262,6 @@ function createLightingShowcase(): SceneData {
   ];
 
   const instances: MeshInstance[] = [];
-
-  const previewPointScale = 0.05;
 
   const pushMaterial = (
     albedo: Vec3,

@@ -77,6 +77,9 @@ struct Scene {
   stratified_grid_n: u32,
   restir_enabled: u32,
   use_streaming_ris_on_bounces: u32,
+
+  _pad: vec3<u32>,
+  restir_biased: u32,
 }
 
 // ----------------------------------------------------------------------------
@@ -795,9 +798,8 @@ fn shade_rt_local(hit: Hit, incoming_ray_dir: vec3f, rng: ptr<function, RngState
 
 // -------------------------- primary visibility pass --------------------------
 
-// one thread = one pixel
-// traces a single primary camera ray and stores the first visible non-emissive
-// surface needed by ReSTIR.
+// traces a single primary camera ray and stores the first non-emissive surface
+// hit; this is needed by the other steps to compute the reservoirs and reuses
 @compute @workgroup_size(8, 8, 1)
 fn visibility_main(@builtin(global_invocation_id) gid: vec3<u32>) {
   let width = u32(scene.canvas_width);
@@ -848,7 +850,7 @@ fn visibility_main(@builtin(global_invocation_id) gid: vec3<u32>) {
 // -------------------------- RIS pass --------------------------
 
 // reads the primary surface buffer and generates one initial local RIS reservoir
-// per pixel. this is only the local reservoir, no temporal/spatial reuse.
+// per pixel. this is only the local reservoir per pixel, no temporal/spatial reuse yet
 @compute @workgroup_size(8, 8, 1)
 fn initial_ris_main(@builtin(global_invocation_id) gid: vec3<u32>) {
   let width = u32(scene.canvas_width);
@@ -887,6 +889,8 @@ fn initial_ris_main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
 // -------------------------- visibility reuse pass --------------------------
 
+// "rejects" the initial reservoirs computed per pixel if the light is not visible
+// from the surface point of the first hit
 @compute @workgroup_size(8, 8, 1)
 fn visibility_reuse_main(@builtin(global_invocation_id) gid: vec3<u32>) {
   let width = u32(scene.canvas_width);
@@ -934,6 +938,10 @@ fn stored_target_p_hat(surface: PrimarySurface, r: StoredReservoir) -> f32 {
   return eval.p_hat;
 }
 
+// combine reservoirs from temporal neighbors for each pixel.
+// some computation has to be done to fetch what is the temporal neighbor for a pixel,
+// since in this case we are not considering an animation, but a static accumulation, we
+// can consider that every temporal neighbor is at the same pixel
 @compute @workgroup_size(8, 8, 1)
 fn temporal_reuse_main(@builtin(global_invocation_id) gid: vec3<u32>) {
   let width = u32(scene.canvas_width);
@@ -952,8 +960,9 @@ fn temporal_reuse_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     return;
   }
 
+  let neigh_idx = idx; // considering the camera static
   let cur_res = reservoirs_curr[idx];
-  let prev_res = reservoirs_prev[idx]; // assuming camera doesnt move
+  let prev_res = reservoirs_prev[idx];
 
   // first frame, nothing to reuse yet
   if (scene.frame_count <= 1u) {
@@ -981,7 +990,7 @@ fn temporal_reuse_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
   }
 
-  // previous frame contribution (same pixel for now, considering camera is static)
+  // previous frame contribution
   if (stored_reservoir_valid(prev_res)) {
     let current_m_for_clamp = select(1u, max(1u, cur_res.M), stored_reservoir_valid(cur_res));
     let prev_m = min(prev_res.M, 20u * current_m_for_clamp);
@@ -1010,8 +1019,26 @@ fn temporal_reuse_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     return;
   }
 
+  if (scene.restir_biased == 0u) {
+    var z = 0u;
+
+    if (stored_reservoir_valid(cur_res) && cur_res.M > 0u && selected_p_hat > 0.0) {
+      z += cur_res.M;
+    }
+
+    if (stored_reservoir_valid(prev_res) && prev_res.M > 0u && selected_p_hat > 0.0) {
+      z += prev_res.M;
+    }
+
+    if (z == 0u) {
+      reservoirs_curr[idx] = invalid_stored_reservoir();
+      return;
+    }
+    combined.final_w = w_sum / (f32(z) * selected_p_hat);
+  } else {
+    combined.final_w = w_sum / (f32(m_sum) * selected_p_hat);
+  }
   combined.M = m_sum;
-  combined.final_w = w_sum / (f32(m_sum) * selected_p_hat);
   combined.valid = 1u;
 
   reservoirs_curr[idx] = combined;
@@ -1049,7 +1076,6 @@ fn shade_primary_from_stored_reservoir(
   let wo = normalize(-incoming_ray_dir);
   let candidate = candidate_from_stored(r);
 
-  // if SPP > 1 maybe its better to keep this? (reservoir may be occluded)
   if (!trace_light_visibility(position, world_normal, candidate)) {
     return vec3f(0.0);
   }
@@ -1058,6 +1084,8 @@ fn shade_primary_from_stored_reservoir(
   return eval.f_unshadowed * r.final_w;
 }
 
+// standard path tracing routine, but using ReSTIR for the first ray hit light sampling 
+// when using ReSTIR, the we assume that SPP = 1, and N = 1 (number of reservoirs per pixel)
 @compute @workgroup_size(8, 8, 1)
 fn shade_pathtrace_main(@builtin(global_invocation_id) gid: vec3<u32>) {
   let width = u32(scene.canvas_width);
@@ -1084,8 +1112,13 @@ fn shade_pathtrace_main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     let cell_start_x = f32(cell_x) * grid_step;
     let cell_start_y = f32(cell_y) * grid_step;
-    let off_x = cell_start_x + rand(&rng) * grid_step;
-    let off_y = cell_start_y + rand(&rng) * grid_step;
+
+    var off_x: f32 = 0.5;
+    var off_y: f32 = 0.5;
+    if (spp > 1) {
+      off_x = cell_start_x + rand(&rng) * grid_step;
+      off_y = cell_start_y + rand(&rng) * grid_step;
+    }
 
     let coord = vec2f(
       (f32(pixel.x) + off_x) / scene.canvas_width,

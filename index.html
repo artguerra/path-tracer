@@ -476,7 +476,7 @@
                     <span
                       class="info"
                       tabindex="0"
-                      data-tooltip="Grid side per pixel used to shoot the sample rays."
+                      data-tooltip="Grid side per pixel used to shoot the sample rays. If using ReSTIR, keep at 1 to have the correct behaviour."
                     >i</span>
                     <span
                       class="info warn"
@@ -508,6 +508,11 @@
               <div class="row inline">
                 <input type="checkbox" id="restirCheckbox" checked />
                 <label class="label" for="restirCheckbox">ReSTIR</label>
+              </div>
+
+              <div class="row inline">
+                <input type="checkbox" id="restirBiasedCheckbox" checked />
+                <label class="label" for="restirBiasedCheckbox">Biased ReSTIR</label>
               </div>
 
               <div class="row inline">
