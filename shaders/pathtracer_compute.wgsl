@@ -1,6 +1,4 @@
 const PI = 3.14159265358979323846;
-const SQRT_2 = 1.41421356237;
-const INV_SQRT_3_4 = 1.154700538;
 const INV_PI = 1.0 / 3.14159265358979323846;
 const EPSILON = 1e-6;
 const MAX_DISTANCE = 1e8;
@@ -118,10 +116,13 @@ struct LightEval {
 }
 
 struct Reservoir {
-  sample: LightCandidate,
-  w_sum: f32,
+  sample: u32,
   m: u32, // samples seen so far
+  sample_uv: vec2<f32>, // barycentric coords of chosen triangle. u, v, w = 1-u-v
+  w_sum: f32,
   final_w: f32, // (1 / p_hat) * (w_sum / M) for the final sample
+  p_hat: f32, // p_hat of chosen sample at current receiving surface
+  valid: u32,
 }
 
 // ----------------------------------------------------------------------------
@@ -179,10 +180,10 @@ var<storage, read> emissive_triangles: array<EmissiveTriangle>;
 var<storage, read_write> primary_surfaces_curr: array<PrimarySurface>;
 
 @group(2) @binding(1)
-var<storage, read_write> reservoirs_curr: array<StoredReservoir>;
+var<storage, read_write> reservoirs_curr: array<Reservoir>;
 
 @group(2) @binding(2)
-var<storage, read_write> reservoirs_prev: array<StoredReservoir>;
+var<storage, read_write> reservoirs_prev: array<Reservoir>;
 
 @group(2) @binding(3)
 var pathtrace_output: texture_storage_2d<rgba32float, write>;
@@ -587,45 +588,41 @@ fn invalid_primary_surface() -> PrimarySurface {
   return PrimarySurface(vec3f(0.0), 0.0, vec3f(0.0), 0u, 0u, 0u);
 }
 
-fn invalid_stored_reservoir() -> StoredReservoir {
-  return StoredReservoir(0u, 0.0, vec2f(0.0), 0u, 0u);
+fn invalid_reservoir() -> Reservoir {
+  return Reservoir(0u, 0u, vec2f(0.0), 0.0, 0.0, 0.0, 0u);
 }
 
 fn primary_surface_valid(s: PrimarySurface) -> bool {
   return s.valid != 0u;
 }
 
-fn stored_reservoir_valid(r: StoredReservoir) -> bool {
-  return r.valid != 0u && r.M > 0u;
+fn reservoir_has_state(r: Reservoir) -> bool {
+  return r.valid != 0u && r.m > 0u;
 }
 
-fn stored_from_local_reservoir(res: Reservoir) -> StoredReservoir {
-  if (res.final_w <= 0.0 || res.m == 0u) {
-    return invalid_stored_reservoir();
-  }
-
-  return StoredReservoir(
-    res.sample.emissive_idx,
-    res.final_w,
-    res.sample.sample_uv,
-    res.m,
-    1u
-  );
+fn reservoir_contributes(r: Reservoir) -> bool {
+  return reservoir_has_state(r) && r.final_w > 0.0;
 }
 
 fn update_reservoir(
-  xi: LightCandidate, // new sample
-  wi: f32, // weight associated to xi
   res: ptr<function, Reservoir>, // the reservoir to update
+  sample: u32, // new sample index
+  sample_uv: vec2f,
+  wi: f32, // weight associated to the sample
+  mi: u32, // amount of samples this update contributes (1 for a normal update)
+  p_hat_i: f32, // evaluation of p_hat at the point
   u: f32 // uniform random variable
 ) {
-  (*res).m++;
+  (*res).m += mi;
   (*res).w_sum += wi;
 
   if (wi > 0.0) {
     let choosing_prob = wi / (*res).w_sum;
     if (u < choosing_prob) {
-      (*res).sample = xi;
+      (*res).sample = sample;
+      (*res).sample_uv = sample_uv;
+      (*res).p_hat = p_hat_i;
+      (*res).valid = 1u;
     }
   }
 }
@@ -683,6 +680,15 @@ fn reconstruct_light_sample(
   );
 }
 
+fn candidate_from_reservoir(r: Reservoir) -> LightCandidate {
+  var light_point: vec3f;
+  var light_normal: vec3f;
+  var area: f32;
+  reconstruct_light_sample(r.sample, r.sample_uv, &light_point, &light_normal, &area);
+
+  return LightCandidate(r.sample, r.sample_uv, light_point, area, light_normal, 0.0);
+}
+
 // uniform light sampling
 fn sample_light_uniform(u: f32) -> u32 {
   let n = scene.num_emissive_triangles;
@@ -717,25 +723,23 @@ fn sample_light_ris(
   rng: ptr<function, RngState>
 ) -> Reservoir {
   const M = 32u; // number of candidate samples from source distribution
-  var res = Reservoir();
-  res.w_sum = 0.0;
-  res.final_w = 0.0;
-  res.m = 0u;
+  var res = invalid_reservoir();
 
   for (var i = 0u; i < M; i++) {
     let candidate = sample_light_candidate_uniform(rng);
     let eval = evaluate_light_candidate(position, normal, wo, mat, candidate);
 
     let w = eval.p_hat / candidate.p_source;
-    update_reservoir(candidate, w, &res, rand(rng));
+    update_reservoir(
+      &res, candidate.emissive_idx, candidate.sample_uv, w, 1u, eval.p_hat, rand(rng)
+    );
   }
 
-  let selected_eval = evaluate_light_candidate(position, normal, wo, mat, res.sample);
-  if (selected_eval.p_hat <= 0.0) {
+  if (res.p_hat <= 0.0) {
     res.final_w = 0.0;
     return res;
   }
-  res.final_w = res.w_sum / (f32(res.m) * selected_eval.p_hat);
+  res.final_w = res.w_sum / (f32(res.m) * res.p_hat);
 
   return res;
 }
@@ -780,9 +784,12 @@ fn shade_rt_local(hit: Hit, incoming_ray_dir: vec3f, rng: ptr<function, RngState
   if (scene.restir_enabled != 0u && scene.use_streaming_ris_on_bounces != 0) {
     let res = sample_light_ris(position, wo, world_normal, mat, rng);
 
-    if (res.final_w > 0.0 && trace_light_visibility(position, world_normal, res.sample)) {
-      let eval = evaluate_light_candidate(position, world_normal, wo, mat, res.sample);
-      color_response += eval.f_unshadowed * res.final_w;
+    if (reservoir_contributes(res)) {
+      let candidate = candidate_from_reservoir(res);
+      if (trace_light_visibility(position, world_normal, candidate)) {
+        let eval = evaluate_light_candidate(position, world_normal, wo, mat, candidate);
+        color_response += eval.f_unshadowed * res.final_w;
+      }
     }
   } else {
     let candidate = sample_light_candidate_uniform(rng);
@@ -863,7 +870,7 @@ fn initial_ris_main(@builtin(global_invocation_id) gid: vec3<u32>) {
   let pixel = vec2<u32>(gid.xy);
   let idx = pixel_index(pixel);
 
-  reservoirs_curr[idx] = invalid_stored_reservoir();
+  reservoirs_curr[idx] = invalid_reservoir();
 
   if (scene.restir_enabled == 0u || scene.num_emissive_triangles == 0u) {
     return;
@@ -884,7 +891,7 @@ fn initial_ris_main(@builtin(global_invocation_id) gid: vec3<u32>) {
   var rng = init_rng(idx + scene.timestamp * 719393u);
 
   let res = sample_light_ris(position, wo, world_normal, mat, &rng);
-  reservoirs_curr[idx] = stored_from_local_reservoir(res);
+  reservoirs_curr[idx] = res;
 }
 
 // -------------------------- visibility reuse pass --------------------------
@@ -905,16 +912,16 @@ fn visibility_reuse_main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
   let surface = primary_surfaces_curr[idx];
   if (!primary_surface_valid(surface)) {
-    reservoirs_curr[idx] = invalid_stored_reservoir();
+    reservoirs_curr[idx] = invalid_reservoir();
     return;
   }
 
   let stored_res = reservoirs_curr[idx];
-  if (!stored_reservoir_valid(stored_res)) {
+  if (!reservoir_has_state(stored_res)) {
     return;
   }
 
-  let candidate = candidate_from_stored(stored_res);
+  let candidate = candidate_from_reservoir(stored_res);
 
   if (!trace_light_visibility(surface.pos, surface.normal, candidate)) {
     reservoirs_curr[idx].final_w = 0.0;
@@ -923,12 +930,13 @@ fn visibility_reuse_main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
 // -------------------------- temporal reuse pass --------------------------
 
-fn stored_target_p_hat(surface: PrimarySurface, r: StoredReservoir) -> f32 {
-  if (!stored_reservoir_valid(r)) {
+// evaluate a reservoir p hat at a surface
+fn reservoir_target_p_hat(surface: PrimarySurface, r: Reservoir) -> f32 {
+  if (!reservoir_has_state(r)) {
     return 0.0;
   }
 
-  let candidate = candidate_from_stored(r);
+  let candidate = candidate_from_reservoir(r);
   let mat = materials[meshes[surface.mesh_idx].material_idx];
   let cam_world_pos = scene.camera.inv_view_mat[3].xyz;
   let wo = normalize(cam_world_pos - surface.pos);
@@ -936,6 +944,67 @@ fn stored_target_p_hat(surface: PrimarySurface, r: StoredReservoir) -> f32 {
   let eval = evaluate_light_candidate(surface.pos, surface.normal, wo, mat, candidate);
 
   return eval.p_hat;
+}
+
+fn combine_reservoirs_biased(
+  res1: Reservoir,
+  res2: Reservoir,
+  rng: ptr<function, RngState>
+) -> Reservoir {
+  var combined = invalid_reservoir();
+
+  if (reservoir_has_state(res1)) {
+    let w = res1.p_hat * res1.final_w * f32(res1.m);
+    update_reservoir(
+      &combined, res1.sample, res1.sample_uv, w, res1.m, res1.p_hat, rand(rng)
+    );
+  }
+
+  if (reservoir_has_state(res2)) {
+    let current_m_for_clamp = max(1u, select(0u, res1.m, reservoir_has_state(res1)));
+    let combining_m = min(res2.m, 20u * current_m_for_clamp);
+
+    let w = res2.p_hat * res2.final_w * f32(combining_m);
+    update_reservoir(
+      &combined, res2.sample, res2.sample_uv, w, combining_m, res2.p_hat, rand(rng)
+    );
+  }
+
+  if (combined.valid == 0u || combined.m == 0u || combined.p_hat <= 0.0) {
+    return invalid_reservoir();
+  }
+
+  combined.final_w = combined.w_sum / (f32(combined.m) * combined.p_hat);
+  return combined;
+}
+
+fn combine_reservoirs_unbiased(
+  res1: Reservoir,
+  res2: Reservoir,
+  rng: ptr<function, RngState>
+) -> Reservoir {
+  var combined = combine_reservoirs_biased(res1, res2, rng);
+
+  // if using the same pixel as temporal neighbor, z == combined.m
+  // otherwise have to check for p hat of the sample evaluated at the neighbor surface
+  var z = 0u;
+
+  if (reservoir_has_state(res1) && combined.p_hat > 0.0) {
+    z += res1.m;
+  }
+
+  if (reservoir_has_state(res2) && combined.p_hat > 0.0) {
+    let current_m_for_clamp = max(1u, select(0u, res1.m, reservoir_has_state(res1)));
+    let combining_m = min(res2.m, 20u * current_m_for_clamp);
+    z += combining_m;
+  }
+
+  if (z == 0u) {
+    return invalid_reservoir();
+  }
+
+  combined.final_w = combined.w_sum / (f32(z) * combined.p_hat);
+  return combined;
 }
 
 // combine reservoirs from temporal neighbors for each pixel.
@@ -951,18 +1020,17 @@ fn temporal_reuse_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     return;
   }
 
-  let pixel = vec2u(gid.xy);
-  let idx = pixel_index(pixel);
+  let idx = pixel_index(gid.xy);
 
   let surface = primary_surfaces_curr[idx];
   if (!primary_surface_valid(surface)) {
-    reservoirs_curr[idx] = invalid_stored_reservoir();
+    reservoirs_curr[idx] = invalid_reservoir();
     return;
   }
 
   let neigh_idx = idx; // considering the camera static
   let cur_res = reservoirs_curr[idx];
-  let prev_res = reservoirs_prev[idx];
+  let prev_res = reservoirs_prev[neigh_idx];
 
   // first frame, nothing to reuse yet
   if (scene.frame_count <= 1u) {
@@ -971,98 +1039,49 @@ fn temporal_reuse_main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
   var rng = init_rng(idx + scene.timestamp * 719393u);
 
-  var combined = invalid_stored_reservoir();
-  var w_sum = 0.0;
-  var m_sum = 0u;
-
-  // current reservoir contribution
-  if (stored_reservoir_valid(cur_res)) {
-    m_sum += cur_res.M;
-
-    let p_hat = stored_target_p_hat(surface, cur_res);
-    let w = p_hat * cur_res.final_w * f32(cur_res.M);
-
-    if (w > 0.0) {
-      w_sum += w;
-      if (rand(&rng) < (w / w_sum)) {
-        combined = cur_res;
-      }
-    }
-  }
-
-  // previous frame contribution
-  if (stored_reservoir_valid(prev_res)) {
-    let current_m_for_clamp = select(1u, max(1u, cur_res.M), stored_reservoir_valid(cur_res));
-    let prev_m = min(prev_res.M, 20u * current_m_for_clamp);
-
-    m_sum += prev_m;
-
-    let p_hat = stored_target_p_hat(surface, prev_res);
-    let w = p_hat * prev_res.final_w * f32(prev_m);
-
-    if (w > 0.0) {
-      w_sum += w;
-      if (rand(&rng) < (w / w_sum)) {
-        combined = prev_res;
-      }
-    }
-  }
-
-  if (m_sum == 0u || w_sum <= 0.0 || combined.valid == 0u) {
-    reservoirs_curr[idx] = invalid_stored_reservoir();
-    return;
-  }
-
-  let selected_p_hat = stored_target_p_hat(surface, combined);
-  if (selected_p_hat <= 0.0) {
-    reservoirs_curr[idx] = invalid_stored_reservoir();
-    return;
-  }
-
   if (scene.restir_biased == 0u) {
-    var z = 0u;
-
-    if (stored_reservoir_valid(cur_res) && cur_res.M > 0u && selected_p_hat > 0.0) {
-      z += cur_res.M;
-    }
-
-    if (stored_reservoir_valid(prev_res) && prev_res.M > 0u && selected_p_hat > 0.0) {
-      z += prev_res.M;
-    }
-
-    if (z == 0u) {
-      reservoirs_curr[idx] = invalid_stored_reservoir();
-      return;
-    }
-    combined.final_w = w_sum / (f32(z) * selected_p_hat);
+    reservoirs_curr[idx] = combine_reservoirs_unbiased(cur_res, prev_res, &rng);
   } else {
-    combined.final_w = w_sum / (f32(m_sum) * selected_p_hat);
+    reservoirs_curr[idx] = combine_reservoirs_biased(cur_res, prev_res, &rng);
   }
-  combined.M = m_sum;
-  combined.valid = 1u;
+}
 
-  reservoirs_curr[idx] = combined;
+// -------------------------- spatial reuse pass --------------------------
+
+// combine reservoirs from spatial neighbors for each pixel
+// considers a given radius of the pixel to choose neighbors from, and chooses 5 of them
+// at random. uses difference on camera distance and normals as criteria to reject samples
+// resulting reservoirs from previous passes in reservoirs_prev. output in reservoirs_curr 
+@compute @workgroup_size(8, 8, 1)
+fn spatial_reuse_main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let width = u32(scene.canvas_width);
+  let height = u32(scene.canvas_height);
+
+  if (gid.x >= width || gid.y >= height) {
+    return;
+  }
+
+  let idx = pixel_index(gid.xy);
+
+  let surface = primary_surfaces_curr[idx];
+  if (!primary_surface_valid(surface)) {
+    reservoirs_curr[idx] = invalid_reservoir();
+    return;
+  }
+
+  reservoirs_curr[idx] = reservoirs_prev[idx];
 }
 
 // -------------------------- path tracing pass --------------------------
 
-fn candidate_from_stored(r: StoredReservoir) -> LightCandidate {
-  var light_point: vec3f;
-  var light_normal: vec3f;
-  var area: f32;
-  reconstruct_light_sample(r.y, r.sample_uv, &light_point, &light_normal, &area);
-
-  return LightCandidate(r.y, r.sample_uv, light_point, area, light_normal, 0.0);
-}
-
 // uses the reservoir generated in previous passes
-fn shade_primary_from_stored_reservoir(
+fn shade_primary_from_reservoir(
   hit: Hit,
   incoming_ray_dir: vec3f,
   pixel_idx: u32
 ) -> vec3f {
   let r = reservoirs_curr[pixel_idx];
-  if (!stored_reservoir_valid(r)) {
+  if (!reservoir_has_state(r)) {
     return vec3f(0.0);
   }
 
@@ -1074,7 +1093,7 @@ fn shade_primary_from_stored_reservoir(
   get_hit_vectors(hit, &position, &world_normal);
 
   let wo = normalize(-incoming_ray_dir);
-  let candidate = candidate_from_stored(r);
+  let candidate = candidate_from_reservoir(r);
 
   if (!trace_light_visibility(position, world_normal, candidate)) {
     return vec3f(0.0);
@@ -1144,13 +1163,8 @@ fn shade_pathtrace_main(@builtin(global_invocation_id) gid: vec3<u32>) {
         // direct lighting:
         // - primary hit: use stored RIS reservoir from compute pass
         // - later bounces: use local estimator
-        if (
-          depth == 0u &&
-          scene.restir_enabled != 0u &&
-          stored_reservoir_valid(reservoirs_curr[idx]) &&
-          reservoirs_curr[idx].final_w > 0.0
-        ) {
-          sample_color += shade_primary_from_stored_reservoir(hit, ray.direction, idx) * throughput;
+        if (depth == 0u && scene.restir_enabled != 0u && reservoir_contributes(reservoirs_curr[idx])) {
+          sample_color += shade_primary_from_reservoir(hit, ray.direction, idx) * throughput;
         } else {
           sample_color += shade_rt_local(hit, ray.direction, &rng).xyz * throughput;
         }

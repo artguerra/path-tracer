@@ -34,6 +34,7 @@ export interface GPUAppPipeline extends GPUAppBase {
   initialRisPipeline: GPUComputePipeline;
   visibilityReusePipeline: GPUComputePipeline;
   temporalReusePipeline: GPUComputePipeline;
+  spatialReusePipeline: GPUComputePipeline;
   shadePathtracePipeline: GPUComputePipeline;
 
   sceneBindGroupLayout: GPUBindGroupLayout;
@@ -221,6 +222,15 @@ export function initRenderPipeline(app: GPUAppBase): GPUAppPipeline {
     },
   });
 
+  const spatialReusePipeline = app.device.createComputePipeline({
+    label: "spatial reuse compute pipeline",
+    layout: computePipelineLayout,
+    compute: {
+      module: pathtracerComputeShaderModule,
+      entryPoint: "spatial_reuse_main",
+    },
+  });
+
   const shadePathtracePipeline = app.device.createComputePipeline({
     label: "shade/pathtrace compute pipeline",
     layout: computePipelineLayout,
@@ -274,7 +284,7 @@ export function initRenderPipeline(app: GPUAppBase): GPUAppPipeline {
 
   const pixelCount = app.canvas.width * app.canvas.height;
   const primarySurfaceStride = 48;
-  const reservoirInitialStride = 24;
+  const reservoirInitialStride = 32;
 
   const primarySurfaceBuffer = app.device.createBuffer({
     size: pixelCount * primarySurfaceStride,
@@ -297,7 +307,7 @@ export function initRenderPipeline(app: GPUAppBase): GPUAppPipeline {
     primarySurfaceBuffer, reservoirsBufferA, reservoirsBufferB,
     sceneBindGroupLayout, geometryBindGroupLayout, restirBindGroupLayout, displayBindGroupLayout,
     rasterPipeline, displayPathtracingPipeline, wireframePipeline,
-    visibilityPipeline, initialRisPipeline, visibilityReusePipeline, temporalReusePipeline, shadePathtracePipeline,
+    visibilityPipeline, initialRisPipeline, visibilityReusePipeline, temporalReusePipeline, spatialReusePipeline, shadePathtracePipeline,
   };
 }
 
@@ -398,6 +408,12 @@ export function render(app: GPUApp, scene: Scene, useRaytracing: boolean): void 
     computePass.dispatchWorkgroups(workgroupCountX, workgroupCountY);
 
     computePass.setPipeline(app.temporalReusePipeline);
+    computePass.dispatchWorkgroups(workgroupCountX, workgroupCountY);
+
+    // swap buffers to have the reservoirs computed so far in the reservoirs_prev storage, write to reservoirs_curr
+    computePass.setBindGroup(2, (scene.frameCount % 2 === 0) ? app.restirBindGroupB : app.restirBindGroupA);
+
+    computePass.setPipeline(app.spatialReusePipeline);
     computePass.dispatchWorkgroups(workgroupCountX, workgroupCountY);
 
     computePass.setPipeline(app.shadePathtracePipeline);
