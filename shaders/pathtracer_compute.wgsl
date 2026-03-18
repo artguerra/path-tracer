@@ -20,9 +20,8 @@ struct Material {
   albedo: vec3<f32>,
   roughness: f32,
   metalness: f32,
-  material_type: u32,
   emission_strength: f32,
-  _pad: f32,
+  _pad: vec2<f32>,
 }
 
 struct EmissiveTriangle {
@@ -46,9 +45,11 @@ struct Mesh {
   tri_offset: u32, // in triangles
   num_triangles: u32,  
   material_idx: u32, // index over the material buffer
+  centroid: vec3<f32>,
   bvh_root: u32,
   bvh_count: u32,
-  _pad: vec2<u32>,
+  _pad1: u32,
+  _pad2: vec2<u32>,
 }
 
 struct BVHNode {
@@ -63,7 +64,6 @@ struct Scene {
   canvas_width: f32,
   canvas_height: f32,
   num_meshes: f32,
-  num_point_lights: u32,
   num_emissive_triangles: u32,
 
   // time
@@ -76,8 +76,6 @@ struct Scene {
   max_ray_depth: u32,
   stratified_grid_n: u32,
   restir_enabled: u32,
-
-  _pad: vec3<f32>,
   use_streaming_ris_on_bounces: u32,
 }
 
@@ -171,22 +169,19 @@ var<storage, read> meshes: array<Mesh>;
 @group(1) @binding(4)
 var<storage, read> bvh_nodes: array<BVHNode>;
 
-@group(2) @binding(0)
-var<storage, read> point_lights: array<PointLight>;
-
-@group(2) @binding(1)
+@group(1) @binding(5)
 var<storage, read> emissive_triangles: array<EmissiveTriangle>;
 
-@group(3) @binding(0)
+@group(2) @binding(0)
 var<storage, read_write> primary_surfaces_curr: array<PrimarySurface>;
 
-@group(3) @binding(1)
+@group(2) @binding(1)
 var<storage, read_write> reservoirs_curr: array<StoredReservoir>;
 
-@group(3) @binding(2)
+@group(2) @binding(2)
 var<storage, read_write> reservoirs_prev: array<StoredReservoir>;
 
-@group(3) @binding(3)
+@group(2) @binding(3)
 var pathtrace_output: texture_storage_2d<rgba32float, write>;
 
 // ----------------------------------------------------------------------------
@@ -1004,10 +999,10 @@ fn temporal_reuse_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
   }
 
-  // if (m_sum == 0u || w_sum <= 0.0 || combined.valid == 0u) {
-  //   reservoirs_curr[idx] = invalid_stored_reservoir();
-  //   return;
-  // }
+  if (m_sum == 0u || w_sum <= 0.0 || combined.valid == 0u) {
+    reservoirs_curr[idx] = invalid_stored_reservoir();
+    return;
+  }
 
   let selected_p_hat = stored_target_p_hat(surface, combined);
   if (selected_p_hat <= 0.0) {

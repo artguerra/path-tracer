@@ -14,7 +14,6 @@ struct Scene {
   canvas_width: f32,
   canvas_height: f32,
   num_meshes: f32,
-  num_point_lights: u32,
   num_emissive_triangles: u32,
 
   // time
@@ -27,6 +26,7 @@ struct Scene {
   max_ray_depth: u32,
   stratified_grid_n: u32,
   restir_enabled: u32,
+  use_streaming_ris_on_bounces: u32,
 }
 
 @group(0) @binding(0)

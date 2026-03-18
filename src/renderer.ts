@@ -38,7 +38,6 @@ export interface GPUAppPipeline extends GPUAppBase {
 
   sceneBindGroupLayout: GPUBindGroupLayout;
   geometryBindGroupLayout: GPUBindGroupLayout;
-  lightBindGroupLayout: GPUBindGroupLayout;
   restirBindGroupLayout: GPUBindGroupLayout;
   displayBindGroupLayout: GPUBindGroupLayout;
 }
@@ -46,7 +45,6 @@ export interface GPUAppPipeline extends GPUAppBase {
 export interface GPUApp extends GPUAppPipeline {
   sceneBindGroup: GPUBindGroup,
   geometryBindGroup: GPUBindGroup,
-  lightBindGroup: GPUBindGroup,
   restirBindGroupA: GPUBindGroup,
   restirBindGroupB: GPUBindGroup,
   displayBindGroupA: GPUBindGroup,
@@ -108,13 +106,7 @@ export function initRenderPipeline(app: GPUAppBase): GPUAppPipeline {
       { binding: 2, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT | GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
       { binding: 3, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT | GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
       { binding: 4, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT | GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
-    ]
-  });
-
-  const lightBindGroupLayout = app.device.createBindGroupLayout({
-    entries: [
-      { binding: 0, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT | GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
-      { binding: 1, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT | GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
+      { binding: 5, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT | GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
     ]
   });
 
@@ -136,11 +128,11 @@ export function initRenderPipeline(app: GPUAppBase): GPUAppPipeline {
   });
 
   const rasterPipelineLayout = app.device.createPipelineLayout({
-    bindGroupLayouts: [sceneBindGroupLayout, geometryBindGroupLayout, lightBindGroupLayout],
+    bindGroupLayouts: [sceneBindGroupLayout, geometryBindGroupLayout],
   });
 
   const computePipelineLayout = app.device.createPipelineLayout({
-    bindGroupLayouts: [sceneBindGroupLayout, geometryBindGroupLayout, lightBindGroupLayout, restirBindGroupLayout],
+    bindGroupLayouts: [sceneBindGroupLayout, geometryBindGroupLayout, restirBindGroupLayout],
   });
 
   const displayPipelineLayout = app.device.createPipelineLayout({
@@ -303,7 +295,7 @@ export function initRenderPipeline(app: GPUAppBase): GPUAppPipeline {
     mainShaderModule, pathtracerComputeShaderModule, displayPathtracingShaderModule,
     depthTexture, accumulationRead, accumulationWrite, pathtraceOutput,
     primarySurfaceBuffer, reservoirsBufferA, reservoirsBufferB,
-    sceneBindGroupLayout, geometryBindGroupLayout, lightBindGroupLayout, restirBindGroupLayout, displayBindGroupLayout,
+    sceneBindGroupLayout, geometryBindGroupLayout, restirBindGroupLayout, displayBindGroupLayout,
     rasterPipeline, displayPathtracingPipeline, wireframePipeline,
     visibilityPipeline, initialRisPipeline, visibilityReusePipeline, temporalReusePipeline, shadePathtracePipeline,
   };
@@ -324,7 +316,7 @@ export function buildSceneBindGroups(app: GPUAppPipeline, scene: Scene): GPUApp 
   });
 
   const geometryBindGroup = app.device.createBindGroup({
-    label: "geometry bind group A",
+    label: "geometry bind group",
     layout: app.geometryBindGroupLayout,
     entries: [
       { binding: 0, resource: { buffer: scene.posBuffer! } },
@@ -332,15 +324,7 @@ export function buildSceneBindGroups(app: GPUAppPipeline, scene: Scene): GPUApp 
       { binding: 2, resource: { buffer: scene.triBuffer! } },
       { binding: 3, resource: { buffer: scene.instanceBuffer! } },
       { binding: 4, resource: { buffer: scene.bvhBuffer! } },
-    ],
-  });
-
-  const lightBindGroup = app.device.createBindGroup({
-    label: "light bind group",
-    layout: app.lightBindGroupLayout,
-    entries: [
-      { binding: 0, resource: { buffer: scene.pointLightBuffer! } },
-      { binding: 1, resource: { buffer: scene.emissiveTriBuffer! } },
+      { binding: 5, resource: { buffer: scene.emissiveTriBuffer! } },
     ],
   });
 
@@ -386,8 +370,8 @@ export function buildSceneBindGroups(app: GPUAppPipeline, scene: Scene): GPUApp 
     ],
   });
 
-  return { ...app, sceneBindGroup, geometryBindGroup, lightBindGroup,
-    restirBindGroupA, restirBindGroupB, displayBindGroupA, displayBindGroupB };
+  return { ...app, sceneBindGroup, geometryBindGroup, restirBindGroupA, restirBindGroupB,
+    displayBindGroupA, displayBindGroupB };
 }
 
 export function render(app: GPUApp, scene: Scene, useRaytracing: boolean): void {
@@ -401,9 +385,8 @@ export function render(app: GPUApp, scene: Scene, useRaytracing: boolean): void 
 
     computePass.setBindGroup(0, app.sceneBindGroup);
     computePass.setBindGroup(1, app.geometryBindGroup);
-    computePass.setBindGroup(2, app.lightBindGroup);
 
-    computePass.setBindGroup(3, (scene.frameCount % 2 === 0) ? app.restirBindGroupA : app.restirBindGroupB);
+    computePass.setBindGroup(2, (scene.frameCount % 2 === 0) ? app.restirBindGroupA : app.restirBindGroupB);
 
     computePass.setPipeline(app.visibilityPipeline);
     computePass.dispatchWorkgroups(workgroupCountX, workgroupCountY);
@@ -411,11 +394,11 @@ export function render(app: GPUApp, scene: Scene, useRaytracing: boolean): void 
     computePass.setPipeline(app.initialRisPipeline);
     computePass.dispatchWorkgroups(workgroupCountX, workgroupCountY);
 
-    // computePass.setPipeline(app.visibilityReusePipeline);
-    // computePass.dispatchWorkgroups(workgroupCountX, workgroupCountY);
+    computePass.setPipeline(app.visibilityReusePipeline);
+    computePass.dispatchWorkgroups(workgroupCountX, workgroupCountY);
 
-    // computePass.setPipeline(app.temporalReusePipeline);
-    // computePass.dispatchWorkgroups(workgroupCountX, workgroupCountY);
+    computePass.setPipeline(app.temporalReusePipeline);
+    computePass.dispatchWorkgroups(workgroupCountX, workgroupCountY);
 
     computePass.setPipeline(app.shadePathtracePipeline);
     computePass.dispatchWorkgroups(workgroupCountX, workgroupCountY);
@@ -442,7 +425,7 @@ export function render(app: GPUApp, scene: Scene, useRaytracing: boolean): void 
     pass.end();
   } else {
     const renderPassDescriptor: GPURenderPassDescriptor = {
-      label: "Main rendering pass",
+      label: "rasterizer rendering pass",
       colorAttachments: [{
         view: app.context.getCurrentTexture().createView(),
         loadOp: "clear",
@@ -459,11 +442,10 @@ export function render(app: GPUApp, scene: Scene, useRaytracing: boolean): void 
 
     const pass = encoder.beginRenderPass(renderPassDescriptor);
 
+    pass.setPipeline(app.rasterPipeline);
+
     pass.setBindGroup(0, app.sceneBindGroup);
     pass.setBindGroup(1, app.geometryBindGroup);
-    pass.setBindGroup(2, app.lightBindGroup);
-
-    pass.setPipeline(app.rasterPipeline);
     
     for (let i = 0; i < scene.instances.length; i++) {
       const numIndices = scene.instances[i].mesh.indices.length;

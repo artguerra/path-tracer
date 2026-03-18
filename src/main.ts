@@ -3,7 +3,7 @@ import {
   initRenderPipeline, buildSceneBindGroups, render,
 } from "./renderer";
 
-import type { Material, LightSource } from "./types";
+import type { Material } from "./types";
 import { type Vec3 } from "./math";
 import { Camera } from "./camera";
 import { Scene } from "./scene";
@@ -195,22 +195,18 @@ function updateStats() {
   }
 }
 
-type SceneData = [Camera, Material[], LightSource[], MeshInstance[]];
+type SceneData = [Camera, Material[], MeshInstance[]];
 
 function createCornellBox(): SceneData {
   const camAspect = ui.canvas.width / ui.canvas.height;
   const camera = new Camera([0.0, 0.6, 1.75], camAspect);
 
   const materials: Material[] = [
-    { albedo: [0.9, 0.9, 0.9], roughness: 1.0, metalness: 0.0, materialType: 0, emissionStrength: 0 }, // white wall
-    { albedo: [0.9, 0.0, 0.0], roughness: 1.0, metalness: 0.0, materialType: 0, emissionStrength: 0 }, // red wall
-    { albedo: [0.0, 0.9, 0.0], roughness: 1.0, metalness: 0.0, materialType: 0, emissionStrength: 0 }, // green wall
-    { albedo: hexToSRGB(ui.albedoPicker.value), roughness: 1.0, metalness: 0.0, materialType: 0, emissionStrength: 0 },
-    { albedo: [1.0, 1.0, 1.0], roughness: 0.0, metalness: 0.0, materialType: 2, emissionStrength: 50 }, // area light
-  ];
-
-  const lights: LightSource[] = [
-    { type: "point", position: [0.0, 0.99, -0.1], intensity: 1.5, color: [1.0, 1.0, 1.0], rayTracedShadows: 1 },
+    { albedo: [0.9, 0.9, 0.9], roughness: 1.0, metalness: 0.0, emissionStrength: 0 }, // white wall
+    { albedo: [0.9, 0.0, 0.0], roughness: 1.0, metalness: 0.0, emissionStrength: 0 }, // red wall
+    { albedo: [0.0, 0.9, 0.0], roughness: 1.0, metalness: 0.0, emissionStrength: 0 }, // green wall
+    { albedo: hexToSRGB(ui.albedoPicker.value), roughness: 1.0, metalness: 0.0, emissionStrength: 0 },
+    { albedo: [1.0, 1.0, 1.0], roughness: 0.0, metalness: 0.0, emissionStrength: 50 }, // area light
   ];
 
   const instances: MeshInstance[] = [
@@ -225,7 +221,7 @@ function createCornellBox(): SceneData {
     { mesh: createQuad([-0.1, 0.99, -0.1], [0.2, 0.0, 0.0], [0.0, 0.0, 0.2]), materialIndex: 4 },
   ];
 
-  return [camera, materials, lights, instances];
+  return [camera, materials, instances];
 }
 
 function createLightingShowcase(): SceneData {
@@ -238,22 +234,20 @@ function createLightingShowcase(): SceneData {
   const camera = new Camera([0.0, 1.15, 16.0], camAspect);
 
   const materials: Material[] = [
-    { albedo: [0.94, 0.95, 0.98], roughness: 0.7, metalness: 0.0, materialType: 0, emissionStrength: 0.0 }, // glossy white shell
-    { albedo: [0.17, 0.18, 0.21], roughness: 0.36, metalness: 0.0, materialType: 0, emissionStrength: 0.0 }, // dark structural parts
-    { albedo: [0.62, 0.64, 0.70], roughness: 0.20, metalness: 0.0, materialType: 0, emissionStrength: 0.0 }, // neutral trim
+    { albedo: [0.94, 0.95, 0.98], roughness: 0.7, metalness: 0.0, emissionStrength: 0.0 }, // white shell
+    { albedo: [0.17, 0.18, 0.21], roughness: 0.36, metalness: 0.0, emissionStrength: 0.0 }, // dark structural parts
+    { albedo: [0.62, 0.64, 0.70], roughness: 0.20, metalness: 0.0, emissionStrength: 0.0 }, // neutral trim
     {
       albedo: hexToSRGB(ui.albedoPicker.value),
       roughness: parseFloat(ui.roughnessSlider.value),
       metalness: parseFloat(ui.metalnessSlider.value),
-      materialType: 0,
       emissionStrength: 0.0
     },
-    { albedo: [0.90, 0.92, 0.95], roughness: 0.05, metalness: 0.0, materialType: 0, emissionStrength: 0.0 }, // glossy accents
-    { albedo: [0.34, 0.35, 0.39], roughness: 0.07, metalness: 0.0, materialType: 0, emissionStrength: 0.0 }, // glossy floor
-    { albedo: [0.05, 0.05, 0.06], roughness: 0.22, metalness: 0.0, materialType: 0, emissionStrength: 0.0 }, // black trim
+    { albedo: [0.90, 0.92, 0.95], roughness: 0.05, metalness: 0.0, emissionStrength: 0.0 }, // glossy accents
+    { albedo: [0.34, 0.35, 0.39], roughness: 0.07, metalness: 0.0, emissionStrength: 0.0 }, // glossy floor
+    { albedo: [0.05, 0.05, 0.06], roughness: 0.22, metalness: 0.0, emissionStrength: 0.0 }, // black trim
   ];
 
-  const lights: LightSource[] = [];
   const instances: MeshInstance[] = [];
 
   const previewPointScale = 0.05;
@@ -263,23 +257,18 @@ function createLightingShowcase(): SceneData {
     roughness: number,
     metalness: number,
     emissionStrength: number,
-    materialType: number = 0
   ): number => {
     materials.push({
       albedo: [albedo[0], albedo[1], albedo[2]],
       roughness,
       metalness,
-      materialType,
       emissionStrength,
     });
     return materials.length - 1;
   };
 
   const addQuad = (origin: Vec3, edge0: Vec3, edge1: Vec3, materialIndex: number) => {
-    instances.push({
-      mesh: createQuad(origin, edge0, edge1),
-      materialIndex,
-    });
+    instances.push({ mesh: createQuad(origin, edge0, edge1), materialIndex });
   };
 
   const addBox = (
@@ -290,10 +279,7 @@ function createLightingShowcase(): SceneData {
     angle: number,
     materialIndex: number
   ) => {
-    instances.push({
-      mesh: createBox(origin, width, height, length, angle),
-      materialIndex,
-    });
+    instances.push({ mesh: createBox(origin, width, height, length, angle), materialIndex });
   };
 
   const addCylinder = (
@@ -316,24 +302,7 @@ function createLightingShowcase(): SceneData {
     longitudeRes: number,
     materialIndex: number
   ) => {
-    instances.push({
-      mesh: createSphere(center, radius, latitudeRes, longitudeRes),
-      materialIndex,
-    });
-  };
-
-  const addPointLight = (
-    position: Vec3,
-    intensity: number,
-    color: Vec3
-  ) => {
-    lights.push({
-      type: "point",
-      position: [position[0], position[1], position[2]],
-      intensity,
-      color,
-      rayTracedShadows: 1,
-    });
+    instances.push({ mesh: createSphere(center, radius, latitudeRes, longitudeRes), materialIndex });
   };
 
   const hsvToRgb = (h: number, s: number, v: number): Vec3 => {
@@ -354,49 +323,29 @@ function createLightingShowcase(): SceneData {
     }
   };
 
-  const addEmissiveBoxWithPreview = (
-    origin: Vec3,
-    width: number,
-    height: number,
-    length: number,
-    angle: number,
-    color: Vec3,
-    emissionStrength: number,
-    previewIntensityScale: number = previewPointScale
-  ) => {
-    const emissiveMat = pushMaterial(color, 0.05, 0.0, emissionStrength, 0);
-    addBox(origin, width, height, length, angle, emissiveMat);
+  const addEmissiveCylinderWithPreview = (
+  origin: Vec3,
+  radius: number,
+  height: number,
+  radialSegments: number,
+  color: Vec3,
+  emissionStrength: number,
+) => {
+  const emissiveMat = pushMaterial(color, 0.05, 0.0, emissionStrength);
+  instances.push({ mesh: createCylinder(origin, radius, height, radialSegments), materialIndex: emissiveMat });
+};
 
-    addPointLight(
-      [
-        origin[0] + 0.5 * width,
-        origin[1] + 0.5 * height,
-        origin[2] + 0.5 * length,
-      ],
-      emissionStrength * previewIntensityScale,
-      color
-    );
-  };
-
-  const addEmissiveCeilingPanel = (
+  const addEmissiveCeilingPanelWithPreview = (
     x: number,
     zCenter: number,
     width: number,
     length: number,
-    thickness: number,
     yTop: number,
     color: Vec3,
     emissionStrength: number
   ) => {
-    addEmissiveBoxWithPreview(
-      [x, yTop - thickness, zCenter - 0.5 * length],
-      width,
-      thickness,
-      length,
-      0.0,
-      color,
-      emissionStrength
-    );
+    const emissiveMat = pushMaterial(color, 0.05, 0.0, emissionStrength);
+    addQuad([x, yTop, zCenter - 0.5 * length], [width, 0, 0], [0, 0, length], emissiveMat);
   };
 
   const addLightTotem = (cx: number, z: number, color: Vec3) => {
@@ -418,26 +367,19 @@ function createLightingShowcase(): SceneData {
     const coreW = 0.08;
 
     // pedestal + rings
-    addCylinder([cx, 0.0, z], baseRadius, baseH, 24, 1);
-    addCylinder([cx, lowerRingY, z], ringRadius, 0.03, 24, 2);
-    addCylinder([cx, midRingY, z], ringRadius, 0.03, 24, 2);
-    addCylinder([cx, topRingY, z], baseRadius * 0.88, 0.05, 24, 1);
+    addCylinder([cx, 0.0, z], baseRadius, baseH, 32, 1);
+    addCylinder([cx, lowerRingY, z], ringRadius, 0.03, 32, 2);
+    addCylinder([cx, midRingY, z], ringRadius, 0.03, 32, 2);
+    addCylinder([cx, topRingY, z], baseRadius * 0.88, 0.05, 32, 1);
 
     // four slim support posts
-    addCylinder([cx - postOffset, postY, z - postOffset], postRadius, postH, 10, 6);
-    addCylinder([cx + postOffset, postY, z - postOffset], postRadius, postH, 10, 6);
-    addCylinder([cx - postOffset, postY, z + postOffset], postRadius, postH, 10, 6);
-    addCylinder([cx + postOffset, postY, z + postOffset], postRadius, postH, 10, 6);
+    addCylinder([cx - postOffset, postY, z - postOffset], postRadius, postH, 20, 6);
+    addCylinder([cx + postOffset, postY, z - postOffset], postRadius, postH, 20, 6);
+    addCylinder([cx - postOffset, postY, z + postOffset], postRadius, postH, 20, 6);
+    addCylinder([cx + postOffset, postY, z + postOffset], postRadius, postH, 20, 6);
 
-    // thin emissive core as real emissive geometry
-    addEmissiveBoxWithPreview(
-      [cx - 0.04, coreY, z - 0.04],
-      coreW,
-      coreH,
-      coreW,
-      0.0,
-      color,
-      50
+    addEmissiveCylinderWithPreview(
+      [cx, coreY, z], 0.75 * coreW, coreH, 20, color, 20
     );
   };
 
@@ -450,9 +392,11 @@ function createLightingShowcase(): SceneData {
   addQuad([-halfW, 0.0, corridorLength], [0.0, corridorHeight, 0.0], [corridorWidth, 0.0, 0.0], 0); // back wall
 
   // floor runway / trims
-  addBox([-0.40, 0.0, 0.55], 0.80, 0.05, corridorLength - 1.10, 0.0, 0);
-  addBox([-0.62, 0.0, 0.35], 0.05, 0.03, corridorLength - 0.70, 0.0, 6);
-  addBox([0.57, 0.0, 0.35], 0.05, 0.03, corridorLength - 0.70, 0.0, 6);
+  addBox([-0.40, 0.0, 0.55], 0.80, 0.05, corridorLength - 1.10, 0.0, 2);
+  addBox([-0.62, 0.0, 0.35], 0.05, 0.03, corridorLength - 0.70, 0.0, 2);
+  addBox([0.57, 0.0, 0.35], 0.05, 0.03, corridorLength - 0.70, 0.0, 2);
+  addBox([-0.62, 0.0, 0.35], 1.19, 0.03, 0.05, 0.0, 2);
+  addBox([-0.62, 0.0, corridorLength - 0.35], 1.24, 0.03, 0.05, 0.0, 2);
 
   // ceiling and side trims
   addBox([-0.16, corridorHeight - 0.18, 0.35], 0.32, 0.12, corridorLength - 0.70, 0.0, 1);
@@ -481,33 +425,19 @@ function createLightingShowcase(): SceneData {
   for (let i = 0; i < ceilingLightCount; i++) {
     const z = ceilingLightStart + i * ceilingLightStep;
 
-    addEmissiveCeilingPanel(
-      -0.92,
-      z,
-      ceilingLightW,
-      ceilingLightL,
-      0.015,
-      corridorHeight - 0.04,
-      ceilingLightColor,
-      0.1
+    addEmissiveCeilingPanelWithPreview(
+      -0.92, z, ceilingLightW, ceilingLightL, corridorHeight - 0.01, ceilingLightColor, 20
     );
 
-    addEmissiveCeilingPanel(
-      0.44,
-      z,
-      ceilingLightW,
-      ceilingLightL,
-      0.015,
-      corridorHeight - 0.04,
-      ceilingLightColor,
-      0.1
+    addEmissiveCeilingPanelWithPreview(
+      0.44, z, ceilingLightW, ceilingLightL, corridorHeight - 0.01, ceilingLightColor, 20
     );
   }
 
   // light totems, evenly spaced through the corridor
-  const pillarCount = 7;
+  const pillarCount = 8;
   const pillarStart = 2.00;
-  const pillarStep = 2.10;
+  const pillarStep = 2.00;
 
   for (let i = 0; i < pillarCount; i++) {
     const t = i === 1 ? 0.0 : i / (pillarCount - 1);
@@ -518,7 +448,7 @@ function createLightingShowcase(): SceneData {
     addLightTotem(x, z, color);
   }
 
-  // glossy showcase objects on the center line
+  // showcase objects on the center line
   const showcaseZ = [4.1, 9.0, 13.9];
   const showcaseMaterials = [3, 0, 3];
 
@@ -526,22 +456,22 @@ function createLightingShowcase(): SceneData {
     const z = showcaseZ[i];
 
     addCylinder([0.0, 0.0, z], 0.18, 0.12, 20, 1);
-    addSphere([0.0, 0.40, z], 0.22, 16, 16, showcaseMaterials[i]);
+    addSphere([0.0, 0.40, z], 0.22, 24, 24, showcaseMaterials[i]);
   }
 
   // end object
   addCylinder([0.0, 0.0, corridorLength - 1.05], 0.20, 0.14, 24, 1);
   addSphere([0.0, 0.46, corridorLength - 1.05], 0.25, 16, 16, 3);
 
-  return [camera, materials, lights, instances];
+  return [camera, materials, instances];
 }
 
 function loadScene(pipelineApp: GPUAppPipeline, sceneId: string) {
-  const [ camera, materials, lights, instances ] = sceneId === "cornell" 
+  const [ camera, materials, instances ] = sceneId === "cornell" 
     ? createCornellBox() 
     : createLightingShowcase();
 
-  state.scene = new Scene(camera, instances, materials, lights);
+  state.scene = new Scene(camera, instances, materials);
 
   state.scene.accumulationEnabled = ui.accumulationCheck.checked;
   state.scene.restirEnabled = ui.restirCheck.checked;

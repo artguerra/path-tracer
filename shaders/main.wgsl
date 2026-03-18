@@ -4,9 +4,8 @@ struct Material {
   albedo: vec3<f32>,
   roughness: f32,
   metalness: f32,
-  material_type: u32,
   emission_strength: f32,
-  _pad: f32,
+  _pad: vec2<f32>,
 }
 
 struct PointLight {
@@ -37,9 +36,11 @@ struct Mesh {
   tri_offset: u32, // in triangles
   num_triangles: u32,  
   material_idx: u32, // index over the material buffer
+  centroid: vec3<f32>,
   bvh_root: u32,
   bvh_count: u32,
-  _pad: vec2<u32>,
+  _pad1: u32,
+  _pad2: vec2<u32>,
 }
 
 struct BVHNode {
@@ -54,7 +55,6 @@ struct Scene {
   canvas_width: f32,
   canvas_height: f32,
   num_meshes: f32,
-  num_point_lights: u32,
   num_emissive_triangles: u32,
 
   // time
@@ -67,6 +67,7 @@ struct Scene {
   max_ray_depth: u32,
   stratified_grid_n: u32,
   restir_enabled: u32,
+  use_streaming_ris_on_bounces: u32,
 }
 
 @group(0) @binding(0)
@@ -90,10 +91,7 @@ var<storage, read> meshes: array<Mesh>;
 @group(1) @binding(4)
 var<storage, read> bvh_nodes: array<BVHNode>;
 
-@group(2) @binding(0)
-var<storage, read> point_lights: array<PointLight>;
-
-@group(2) @binding(1)
+@group(1) @binding(5)
 var<storage, read> emissive_triangles: array<EmissiveTriangle>;
 
 // ----------------------------- helper functions -----------------------------
@@ -191,23 +189,24 @@ fn point_light_shade(
   position: vec3f, 
   normal: vec3f, 
   material_idx: u32, 
-  light_source_idx: u32, 
+  light_position: vec3f,
+  light_color: vec3f,
+  light_intensity: f32,
   wo: vec3f
 ) -> vec3f {
-  let light = point_lights[light_source_idx];
-
-  var wi = light.position - position;
+  var wi = light_position - position;
   let di = length(wi);
   wi = normalize(wi);
 
   let att = attenuation(di);
-  let ir = light.color * light.intensity * att;
+  let ir = light_color * 1.0 * att;
   var m = materials[material_idx];
 
   let fr = brdf(wi, wo, normal, m.albedo, m.roughness, m.metalness);
 
   return ir * fr * max(0.0, dot(wi, normal));
 }
+
 
 fn compute_radiance(
   position: vec3f, 
@@ -216,10 +215,20 @@ fn compute_radiance(
   wo: vec3f
 ) -> vec3f {
   var color_response = vec3f(0.0);
-  let num_lights = u32(scene.num_point_lights);
+  let num_meshes = u32(scene.num_meshes);
 
-  for (var light_source_idx = 0u; light_source_idx < num_lights; light_source_idx++) {
-    color_response += point_light_shade(position, normal, material_idx, light_source_idx, wo);
+  for (var mesh_idx = 0u; mesh_idx < num_meshes; mesh_idx++) {
+    let mesh = meshes[mesh_idx];
+    let mat = materials[mesh.material_idx];
+
+    if (mat.emission_strength > 0.0) {
+      let light_pos = mesh.centroid;
+      let light_color = mat.albedo;
+      let intensity = mat.emission_strength;
+      color_response += point_light_shade(
+        position, normal, material_idx, light_pos, light_color, intensity, wo
+      );
+    }
   }
 
   return color_response;
