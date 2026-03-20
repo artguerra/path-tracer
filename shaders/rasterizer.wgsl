@@ -8,13 +8,6 @@ struct Material {
   _pad: vec2<f32>,
 }
 
-struct PointLight {
-  position: vec3<f32>,
-  intensity: f32,
-  color: vec3<f32>,
-  ray_traced_shadows: u32,
-}
-
 struct EmissiveTriangle {
   tri_idx: u32,
   mesh_idx: u32,

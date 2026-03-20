@@ -7,13 +7,6 @@ const MAX_DISTANCE = 1e8;
 // scene / geometry / material structs
 // ----------------------------------------------------------------------------
 
-struct PointLight {
-  position: vec3<f32>,
-  intensity: f32,
-  color: vec3<f32>,
-  ray_traced_shadows: u32,
-}
-
 struct Material {
   albedo: vec3<f32>,
   roughness: f32,
@@ -120,7 +113,7 @@ struct Reservoir {
   m: u32, // samples seen so far
   sample_uv: vec2<f32>, // barycentric coords of chosen triangle. u, v, w = 1-u-v
   w_sum: f32,
-  final_w: f32, // (1 / p_hat) * (w_sum / M) for the final sample
+  final_w: f32, // W = (1 / p_hat) * (w_sum / M) for the final sample
   p_hat: f32, // p_hat of chosen sample at current receiving surface
   valid: u32,
 }
@@ -136,15 +129,6 @@ struct PrimarySurface {
   normal: vec3<f32>,
   tri_idx: u32,
   mesh_idx: u32,
-  valid: u32,
-}
-
-// stored reservoir to be reused
-struct StoredReservoir {
-  y: u32, // chosen emissive triangle index
-  final_w: f32, // W
-  sample_uv: vec2<f32>, // barycentric coords of chosen triangle. u, v, w = 1-u-v
-  M: u32,
   valid: u32,
 }
 
@@ -892,7 +876,7 @@ fn initial_ris_main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
 // -------------------------- visibility reuse pass --------------------------
 
-// "rejects" the initial reservoirs computed per pixel if the light is not visible
+// rejects the initial reservoirs computed per pixel if the light is not visible
 // from the surface point of the first hit
 @compute @workgroup_size(8, 8, 1)
 fn visibility_reuse_main(@builtin(global_invocation_id) gid: vec3<u32>) {
@@ -1187,7 +1171,7 @@ fn shade_primary_from_reservoir(
 // standard path tracing routine, but using ReSTIR for the first ray hit light sampling 
 // when using ReSTIR, the we assume that SPP = 1, and N = 1 (number of reservoirs per pixel)
 @compute @workgroup_size(8, 8, 1)
-fn shade_pathtrace_main(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn shade_pathtrace_restir_main(@builtin(global_invocation_id) gid: vec3<u32>) {
   let width = u32(scene.canvas_width);
   let height = u32(scene.canvas_height);
 
@@ -1243,7 +1227,7 @@ fn shade_pathtrace_main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
         // direct lighting:
         // - primary hit: use stored RIS reservoir from compute pass
-        // - later bounces: use local estimator
+        // - later bounces: use local estimator (either uniform light sampling or streaming RIS)
         if (depth == 0u && scene.restir_enabled != 0u && reservoir_valid(reservoirs_curr[idx])) {
           sample_color += shade_primary_from_reservoir(hit, ray.direction, idx) * throughput;
         } else {

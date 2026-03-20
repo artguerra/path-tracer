@@ -16,6 +16,8 @@ const state = {
 
 const ui = {
   canvas: document.querySelector("canvas") as HTMLCanvasElement,
+  errorScreen: document.querySelector("#errorScreen") as HTMLDivElement,
+  overlayShell: document.querySelector(".overlay-shell") as HTMLDivElement,
   raytracingCheck: document.querySelector("#raytracingCheckbox") as HTMLInputElement,
   albedoPicker: document.querySelector("#diffuseAlbedo") as HTMLInputElement,
   roughnessSlider: document.querySelector("#roughness") as HTMLInputElement,
@@ -261,7 +263,7 @@ function createLightingShowcase(): SceneData {
   const materials: Material[] = [
     { albedo: [0.94, 0.95, 0.98], roughness: 0.7, metalness: 0.0, emissionStrength: 0.0 }, // white shell
     { albedo: [0.17, 0.18, 0.21], roughness: 0.5, metalness: 0.0, emissionStrength: 0.0 }, // dark structural parts
-    { albedo: [0.34, 0.35, 0.39], roughness: 0.35, metalness: 0.0, emissionStrength: 0.0 }, // neutral trim
+    { albedo: [0.34, 0.35, 0.39], roughness: 0.75, metalness: 0.0, emissionStrength: 0.0 }, // neutral trim
     {
       albedo: hexToSRGB(ui.albedoPicker.value),
       roughness: parseFloat(ui.roughnessSlider.value),
@@ -516,6 +518,13 @@ function loadScene(pipelineApp: GPUAppPipeline, sceneId: string) {
 async function main() {
   const baseApp = await initWebGPU(ui.canvas);
   const pipelineApp = initRenderPipeline(baseApp);
+
+  if (!baseApp.supportsReSTIR) {
+    ui.canvas.style.display = "none";
+    ui.overlayShell.style.display = "none";
+    ui.errorScreen.style.display = "flex";
+    return;
+  }
 
   loadScene(pipelineApp, ui.sceneSelect.value);
   initEvents();

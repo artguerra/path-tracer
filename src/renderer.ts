@@ -1,8 +1,10 @@
-import mainShaders from "@shaders/main.wgsl?raw";
+import rasterizerShaders from "@shaders/rasterizer.wgsl?raw";
 import pathtracerComputeShaders from "@shaders/pathtracer_compute.wgsl?raw";
 import displayPathtracingShaders from "@shaders/display_pathtracing.wgsl?raw";
 
 import { Scene } from "./scene";
+
+const RESTIR_NEEDED_STORAGE_BUFFERS = 10;
 
 export interface GPUAppBase {
   device: GPUDevice;
@@ -10,6 +12,7 @@ export interface GPUAppBase {
   context: GPUCanvasContext;
   canvas: HTMLCanvasElement;
   canvasFormat: GPUTextureFormat;
+  supportsReSTIR: boolean;
 }
 
 export interface GPUAppPipeline extends GPUAppBase {
@@ -22,7 +25,7 @@ export interface GPUAppPipeline extends GPUAppBase {
   reservoirsBufferA: GPUBuffer;
   reservoirsBufferB: GPUBuffer;
 
-  mainShaderModule: GPUShaderModule;
+  rasterShaderModule: GPUShaderModule;
   pathtracerComputeShaderModule: GPUShaderModule;
   displayPathtracingShaderModule: GPUShaderModule;
 
@@ -35,7 +38,7 @@ export interface GPUAppPipeline extends GPUAppBase {
   visibilityReusePipeline: GPUComputePipeline;
   temporalReusePipeline: GPUComputePipeline;
   spatialReusePipeline: GPUComputePipeline;
-  shadePathtracePipeline: GPUComputePipeline;
+  computePathtracePipeline: GPUComputePipeline;
 
   sceneBindGroupLayout: GPUBindGroupLayout;
   geometryBindGroupLayout: GPUBindGroupLayout;
@@ -60,11 +63,19 @@ export async function initWebGPU(canvas: HTMLCanvasElement): Promise<GPUAppBase>
   });
   if (!adapter) throw new Error("No adapter available for WebGPU.");
 
-  const device = await adapter.requestDevice({
-    requiredLimits: {
-      maxStorageBuffersPerShaderStage: adapter.limits.maxStorageBuffersPerShaderStage
-    },
-  });
+  const supportsReSTIR = adapter.limits.maxStorageBuffersPerShaderStage >= RESTIR_NEEDED_STORAGE_BUFFERS;
+
+  let device: GPUDevice;
+  if (supportsReSTIR) {
+    device = await adapter.requestDevice({
+      requiredLimits: {
+        maxStorageBuffersPerShaderStage: RESTIR_NEEDED_STORAGE_BUFFERS
+      },
+    });
+  } else {
+    device = await adapter.requestDevice();
+  }
+
   const context = canvas.getContext("webgpu") as GPUCanvasContext;
   const canvasFormat = navigator.gpu.getPreferredCanvasFormat();
 
@@ -74,13 +85,13 @@ export async function initWebGPU(canvas: HTMLCanvasElement): Promise<GPUAppBase>
     alphaMode: "opaque",
   });
 
-  return { adapter, device, canvas, context, canvasFormat };
+  return { adapter, device, canvas, context, canvasFormat, supportsReSTIR };
 }
 
 export function initRenderPipeline(app: GPUAppBase): GPUAppPipeline {
-  const mainShaderModule = app.device.createShaderModule({
+  const rasterShaderModule = app.device.createShaderModule({
     label: "rasterization/wireframe shaders",
-    code: mainShaders,
+    code: rasterizerShaders,
   });
 
   const pathtracerComputeShaderModule = app.device.createShaderModule({
@@ -132,7 +143,7 @@ export function initRenderPipeline(app: GPUAppBase): GPUAppPipeline {
     bindGroupLayouts: [sceneBindGroupLayout, geometryBindGroupLayout],
   });
 
-  const computePipelineLayout = app.device.createPipelineLayout({
+  const pathtracePipelineLayout = app.device.createPipelineLayout({
     bindGroupLayouts: [sceneBindGroupLayout, geometryBindGroupLayout, restirBindGroupLayout],
   });
 
@@ -144,11 +155,11 @@ export function initRenderPipeline(app: GPUAppBase): GPUAppPipeline {
     label: "rasterization pipeline",
     layout: rasterPipelineLayout,
     vertex: {
-      module: mainShaderModule,
+      module: rasterShaderModule,
       entryPoint: "raster_vertex_main",
     },
     fragment: {
-      module: mainShaderModule,
+      module: rasterShaderModule,
       entryPoint: "raster_fragment_main",
       targets: [{ format: app.canvasFormat }],
     },
@@ -167,11 +178,11 @@ export function initRenderPipeline(app: GPUAppBase): GPUAppPipeline {
     label: "wireframe pipeline",
     layout: rasterPipelineLayout,
     vertex: {
-      module: mainShaderModule,
+      module: rasterShaderModule,
       entryPoint: "wireframe_vertex_main",
     },
     fragment: {
-      module: mainShaderModule,
+      module: rasterShaderModule,
       entryPoint: "wireframe_fragment_main",
       targets: [{ format: app.canvasFormat }],
     },
@@ -188,7 +199,7 @@ export function initRenderPipeline(app: GPUAppBase): GPUAppPipeline {
 
   const visibilityPipeline = app.device.createComputePipeline({
     label: "visibility compute pipeline",
-    layout: computePipelineLayout,
+    layout: pathtracePipelineLayout,
     compute: {
       module: pathtracerComputeShaderModule,
       entryPoint: "visibility_main",
@@ -197,7 +208,7 @@ export function initRenderPipeline(app: GPUAppBase): GPUAppPipeline {
 
   const initialRisPipeline = app.device.createComputePipeline({
     label: "initial RIS compute pipeline",
-    layout: computePipelineLayout,
+    layout: pathtracePipelineLayout,
     compute: {
       module: pathtracerComputeShaderModule,
       entryPoint: "initial_ris_main",
@@ -206,7 +217,7 @@ export function initRenderPipeline(app: GPUAppBase): GPUAppPipeline {
 
   const visibilityReusePipeline = app.device.createComputePipeline({
     label: "visibility reuse compute pipeline",
-    layout: computePipelineLayout,
+    layout: pathtracePipelineLayout,
     compute: {
       module: pathtracerComputeShaderModule,
       entryPoint: "visibility_reuse_main",
@@ -215,7 +226,7 @@ export function initRenderPipeline(app: GPUAppBase): GPUAppPipeline {
 
   const temporalReusePipeline = app.device.createComputePipeline({
     label: "temporal reuse compute pipeline",
-    layout: computePipelineLayout,
+    layout: pathtracePipelineLayout,
     compute: {
       module: pathtracerComputeShaderModule,
       entryPoint: "temporal_reuse_main",
@@ -224,19 +235,19 @@ export function initRenderPipeline(app: GPUAppBase): GPUAppPipeline {
 
   const spatialReusePipeline = app.device.createComputePipeline({
     label: "spatial reuse compute pipeline",
-    layout: computePipelineLayout,
+    layout: pathtracePipelineLayout,
     compute: {
       module: pathtracerComputeShaderModule,
       entryPoint: "spatial_reuse_main",
     },
   });
 
-  const shadePathtracePipeline = app.device.createComputePipeline({
-    label: "shade/pathtrace compute pipeline",
-    layout: computePipelineLayout,
+  const computePathtracePipeline = app.device.createComputePipeline({
+    label: "pathtrace compute pipeline",
+    layout: pathtracePipelineLayout,
     compute: {
       module: pathtracerComputeShaderModule,
-      entryPoint: "shade_pathtrace_main",
+      entryPoint: "shade_pathtrace_restir_main",
     },
   });
 
@@ -302,12 +313,13 @@ export function initRenderPipeline(app: GPUAppBase): GPUAppPipeline {
   });
 
   return { ...app,
-    mainShaderModule, pathtracerComputeShaderModule, displayPathtracingShaderModule,
+    rasterShaderModule, pathtracerComputeShaderModule, displayPathtracingShaderModule,
     depthTexture, accumulationRead, accumulationWrite, pathtraceOutput,
     primarySurfaceBuffer, reservoirsBufferA, reservoirsBufferB,
     sceneBindGroupLayout, geometryBindGroupLayout, restirBindGroupLayout, displayBindGroupLayout,
     rasterPipeline, displayPathtracingPipeline, wireframePipeline,
-    visibilityPipeline, initialRisPipeline, visibilityReusePipeline, temporalReusePipeline, spatialReusePipeline, shadePathtracePipeline,
+    visibilityPipeline, initialRisPipeline, visibilityReusePipeline, temporalReusePipeline,
+    spatialReusePipeline, computePathtracePipeline,
   };
 }
 
@@ -399,38 +411,40 @@ export function render(app: GPUApp, scene: Scene, useRaytracing: boolean): void 
     computePass.setBindGroup(0, app.sceneBindGroup);
     computePass.setBindGroup(1, app.geometryBindGroup);
 
-    computePass.setBindGroup(2, bg0);
+    if (app.supportsReSTIR) {
+      computePass.setBindGroup(2, bg0);
 
-    computePass.setPipeline(app.visibilityPipeline);
-    computePass.dispatchWorkgroups(workgroupCountX, workgroupCountY);
-
-    computePass.setPipeline(app.initialRisPipeline);
-    computePass.dispatchWorkgroups(workgroupCountX, workgroupCountY);
-
-    computePass.setPipeline(app.visibilityReusePipeline);
-    computePass.dispatchWorkgroups(workgroupCountX, workgroupCountY);
-
-    if (scene.temporalReuseEnabled) {
-      computePass.setPipeline(app.temporalReusePipeline);
-      computePass.dispatchWorkgroups(workgroupCountX, workgroupCountY);
-    }
-
-    if (scene.spatialReuseEnabled) {
-      // swap buffers to have the reservoirs computed so far in the reservoirs_prev storage, write to reservoirs_curr
-      computePass.setBindGroup(2, bg1);
-      computePass.setPipeline(app.spatialReusePipeline);
+      computePass.setPipeline(app.visibilityPipeline);
       computePass.dispatchWorkgroups(workgroupCountX, workgroupCountY);
 
-      // second pass if biased
-      if (scene.restirBiased) {
-        computePass.setBindGroup(2, bg0);
-        computePass.setPipeline(app.spatialReusePipeline);
+      computePass.setPipeline(app.initialRisPipeline);
+      computePass.dispatchWorkgroups(workgroupCountX, workgroupCountY);
+
+      computePass.setPipeline(app.visibilityReusePipeline);
+      computePass.dispatchWorkgroups(workgroupCountX, workgroupCountY);
+
+      if (scene.temporalReuseEnabled) {
+        computePass.setPipeline(app.temporalReusePipeline);
         computePass.dispatchWorkgroups(workgroupCountX, workgroupCountY);
       }
-    }
 
-    computePass.setPipeline(app.shadePathtracePipeline);
-    computePass.dispatchWorkgroups(workgroupCountX, workgroupCountY);
+      if (scene.spatialReuseEnabled) {
+        // swap buffers to have the reservoirs computed so far in the reservoirs_prev storage, write to reservoirs_curr
+        computePass.setBindGroup(2, bg1);
+        computePass.setPipeline(app.spatialReusePipeline);
+        computePass.dispatchWorkgroups(workgroupCountX, workgroupCountY);
+
+        // second pass if biased
+        if (scene.restirBiased) {
+          computePass.setBindGroup(2, bg0);
+          computePass.setPipeline(app.spatialReusePipeline);
+          computePass.dispatchWorkgroups(workgroupCountX, workgroupCountY);
+        }
+      }
+
+      computePass.setPipeline(app.computePathtracePipeline);
+      computePass.dispatchWorkgroups(workgroupCountX, workgroupCountY);
+    }
 
     computePass.end();
 
