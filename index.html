@@ -27,23 +27,31 @@
     html,
     body {
       margin: 0;
-      width: 100%;
-      height: 100%;
-      overflow: hidden;
+      min-height: 100%;
       background-color: var(--bg);
       color: var(--text);
       font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     }
 
     body {
-      display: grid;
-      place-items: center;
+      overflow-x: hidden;
+      overflow-y: auto;
+    }
+
+    .page {
+      width: min(1100px, calc(100vw - 24px));
+      margin: 24px auto 40px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 20px;
     }
 
     .app {
       position: relative;
-      width: min(calc(100vw - 24px), calc((100vh - 24px) * 4 / 3));
-      height: min(calc(100vh - 24px), calc((100vw - 24px) * 3 / 4));
+      width: 100%;
+      aspect-ratio: 4 / 3;
+      max-height: calc(100vh - 24px);
     }
 
     canvas {
@@ -55,6 +63,41 @@
       border: 1px solid var(--border);
       box-shadow: var(--shadow);
     }
+
+    .controls-help,
+    .report-section {
+      width: 100%;
+      padding: 18px 20px;
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      background: var(--panel);
+      box-shadow: var(--shadow);
+    }
+
+    .controls-help h3,
+    .report-section h3 {
+      margin: 0 0 12px;
+      font-size: 1rem;
+      color: var(--text);
+    }
+
+    .controls-help p {
+      margin: 0 0 12px;
+      color: var(--muted);
+      line-height: 1.65;
+    }
+
+    .controls-help p:last-child {
+      margin-bottom: 0;
+    }
+
+    .report-frame {
+      width: 100%;
+      height: 900px;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      background: #111;
+  }
 
     .overlay-shell {
       position: absolute;
@@ -438,182 +481,196 @@
   </head>
 
   <body>
-    <div class="app">
-      <canvas width="1024" height="768"></canvas>
+    <main class="page">
+      <div class="app">
+        <canvas width="1024" height="768"></canvas>
 
-      <div id="errorScreen">
-        <div class="row error-card">
-          <div class="overlay-title error-title">Device Not Supported</div>
-          <div class="hint error-text">
-            This device does not support the amount of storage buffers needed to compute ReSTIR (10 minimum).
+        <div id="errorScreen">
+          <div class="row error-card">
+            <div class="overlay-title error-title">Device Not Supported</div>
+            <div class="hint error-text">
+              This device does not support the amount of storage buffers needed to compute ReSTIR (10 minimum).
+            </div>
           </div>
         </div>
-      </div>
 
-      <div class="overlay-shell">
-        <details class="overlay" open>
-          <summary>
-            <div class="overlay-header">
-              <div class="overlay-title-wrap">
-                <div class="overlay-title">Path Tracer Debug</div>
-                <div class="overlay-badge">WebGPU</div>
-              </div>
-              <div class="collapse-indicator"></div>
-            </div>
-          </summary>
-
-          <div class="overlay-content">
-            <div class="metrics">
-              <div class="metric-card">
-                <div class="metric-label">FPS</div>
-                <div class="metric-value" id="fpsCounter">0.0</div>
-              </div>
-              <div class="metric-card">
-                <div class="metric-label">Frame Time</div>
-                <div class="metric-value" id="frameTime">0.0 ms</div>
-              </div>
-            </div>
-
-            <div class="section">
-              <div class="row">
-                <div class="row-top">
-                  <label class="label" for="sceneSelect">Scene</label>
+        <div class="overlay-shell">
+          <details class="overlay" open>
+            <summary>
+              <div class="overlay-header">
+                <div class="overlay-title-wrap">
+                  <div class="overlay-title">Path Tracer Debug</div>
+                  <div class="overlay-badge">WebGPU</div>
                 </div>
-                <select id="sceneSelect">
-                  <option value="lightShowcase">Light Sampling Showcase</option>
-                  <option value="cornell">Cornell Box</option>
-                </select>
+                <div class="collapse-indicator"></div>
+              </div>
+            </summary>
+
+            <div class="overlay-content">
+              <div class="metrics">
+                <div class="metric-card">
+                  <div class="metric-label">FPS</div>
+                  <div class="metric-value" id="fpsCounter">0.0</div>
+                </div>
+                <div class="metric-card">
+                  <div class="metric-label">Frame Time</div>
+                  <div class="metric-value" id="frameTime">0.0 ms</div>
+                </div>
               </div>
 
-              <div class="row inline">
-                <input type="checkbox" id="raytracingCheckbox" />
-                <label class="label" for="raytracingCheckbox">Path tracing</label>
-              </div>
+              <div class="section">
+                <div class="row">
+                  <div class="row-top">
+                    <label class="label" for="sceneSelect">Scene</label>
+                  </div>
+                  <select id="sceneSelect">
+                    <option value="lightShowcase">Light Sampling Showcase</option>
+                    <option value="cornell">Cornell Box</option>
+                  </select>
+                </div>
 
-              <div class="row">
-                <div class="row-top">
-                  <div class="label-wrap">
-                    <label class="label" for="rayDepth">Max ray depth</label>
-                    <span
-                      class="info warn"
-                      tabindex="0"
-                      data-tooltip="Increasing affects performance. Russian Roulette active after 3 bounces."
-                    >!</span>
+                <div class="row inline">
+                  <input type="checkbox" id="raytracingCheckbox" />
+                  <label class="label" for="raytracingCheckbox">Path tracing</label>
+                </div>
+
+                <div class="row">
+                  <div class="row-top">
+                    <div class="label-wrap">
+                      <label class="label" for="rayDepth">Max ray depth</label>
+                      <span
+                        class="info warn"
+                        tabindex="0"
+                        data-tooltip="Increasing affects performance. Russian Roulette active after 3 bounces."
+                      >!</span>
+                    </div>
+                  </div>
+                  <input type="range" id="rayDepth" min="1" max="30" step="1" value="3" />
+                  <div class="row-top">
+                    <span class="hint">Bounce limit</span>
+                    <span id="depthText" class="stat">3</span>
                   </div>
                 </div>
-                <input type="range" id="rayDepth" min="1" max="30" step="1" value="3" />
-                <div class="row-top">
-                  <span class="hint">Bounce limit</span>
-                  <span id="depthText" class="stat">3</span>
-                </div>
-              </div>
 
-              <div class="row">
-                <div class="row-top">
+                <div class="row">
+                  <div class="row-top">
+                    <div class="label-wrap">
+                      <label class="label" for="stratifiedGridN">Stratified grid N</label>
+                      <span
+                        class="info"
+                        tabindex="0"
+                        data-tooltip="Grid side per pixel used to shoot the sample rays. If using ReSTIR, keep at 1 to have the correct behaviour."
+                      >i</span>
+                      <span
+                        class="info warn"
+                        tabindex="0"
+                        data-tooltip="Increasing might severely affect performance."
+                      >!</span>
+                    </div>
+                    <span class="value">√SPP</span>
+                  </div>
+                  <input type="range" id="stratifiedGridN" min="1" max="16" step="1" value="1" />
+                  <div class="row-top">
+                    <span class="hint">Samples per pixel</span>
+                    <span id="spp" class="stat">1</span>
+                  </div>
+                </div>
+
+                <div class="row inline">
+                  <input type="checkbox" id="accumulationCheckbox" checked />
                   <div class="label-wrap">
-                    <label class="label" for="stratifiedGridN">Stratified grid N</label>
+                    <label class="label" for="accumulationCheckbox">Accumulation</label>
                     <span
                       class="info"
                       tabindex="0"
-                      data-tooltip="Grid side per pixel used to shoot the sample rays. If using ReSTIR, keep at 1 to have the correct behaviour."
+                      data-tooltip="Accumulates previous frame samples for cleaner preview and better realtime performance."
                     >i</span>
-                    <span
-                      class="info warn"
-                      tabindex="0"
-                      data-tooltip="Increasing might severely affect performance."
-                    >!</span>
-                  </div>
-                  <span class="value">√SPP</span>
-                </div>
-                <input type="range" id="stratifiedGridN" min="1" max="16" step="1" value="1" />
-                <div class="row-top">
-                  <span class="hint">Samples per pixel</span>
-                  <span id="spp" class="stat">1</span>
-                </div>
-              </div>
-
-              <div class="row inline">
-                <input type="checkbox" id="accumulationCheckbox" checked />
-                <div class="label-wrap">
-                  <label class="label" for="accumulationCheckbox">Accumulation</label>
-                  <span
-                    class="info"
-                    tabindex="0"
-                    data-tooltip="Accumulates previous frame samples for cleaner preview and better realtime performance."
-                  >i</span>
-                </div>
-              </div>
-
-              <div class="row inline">
-                <input type="checkbox" id="restirCheckbox" checked />
-                <label class="label" for="restirCheckbox">ReSTIR</label>
-              </div>
-
-
-              <details class="group">
-                <summary>ReSTIR controls</summary>
-                <div class="group-content">
-                  <div class="row inline">
-                    <input type="checkbox" id="restirBiasedCheckbox" checked />
-                    <label class="label" for="restirBiasedCheckbox">Biased ReSTIR</label>
-                  </div>
-
-                  <div class="row inline">
-                    <input type="checkbox" id="temporalReuseCheckbox" checked />
-                    <label class="label" for="temporalReuseCheckbox">Temporal Reuse</label>
-                  </div>
-
-                  <div class="row inline">
-                    <input type="checkbox" id="spatialReuseCheckbox" checked />
-                    <label class="label" for="spatialReuseCheckbox">Spatial Reuse</label>
-                  </div>
-
-                  <div class="row inline">
-                    <input type="checkbox" id="risOnBouncesCheckbox" />
-                    <label class="label" for="risOnBouncesCheckbox">ReSTIR - Use streaming RIS on bounces</label>
                   </div>
                 </div>
-              </details>
 
-              <div class="row inline">
-                <input type="checkbox" id="toneMappingCheckbox" />
-                <label class="label" for="toneMappingCheckbox">Tone mapping</label>
-              </div>
+                <div class="row inline">
+                  <input type="checkbox" id="restirCheckbox" checked />
+                  <label class="label" for="restirCheckbox">ReSTIR</label>
+                </div>
 
-              <details class="group">
-                <summary>Material controls</summary>
-                <div class="group-content">
-                  <div class="row inline">
-                    <input type="color" id="diffuseAlbedo" value="#ffffff" />
-                    <label class="label" for="diffuseAlbedo">Albedo</label>
-                  </div>
 
-                  <div class="row">
-                    <div class="row-top">
-                      <label class="label" for="roughness">Roughness</label>
+                <details class="group">
+                  <summary>ReSTIR controls</summary>
+                  <div class="group-content">
+                    <div class="row inline">
+                      <input type="checkbox" id="restirBiasedCheckbox" checked />
+                      <label class="label" for="restirBiasedCheckbox">Biased ReSTIR</label>
                     </div>
-                    <input type="range" id="roughness" min="0.1" max="1.0" step="0.05" value="0.1" />
-                  </div>
 
-                  <div class="row">
-                    <div class="row-top">
-                      <label class="label" for="metalness">Metalness</label>
+                    <div class="row inline">
+                      <input type="checkbox" id="temporalReuseCheckbox" checked />
+                      <label class="label" for="temporalReuseCheckbox">Temporal Reuse</label>
                     </div>
-                    <input type="range" id="metalness" min="0.0" max="1.0" step="0.05" value="1.0" />
+
+                    <div class="row inline">
+                      <input type="checkbox" id="spatialReuseCheckbox" checked />
+                      <label class="label" for="spatialReuseCheckbox">Spatial Reuse</label>
+                    </div>
+
+                    <div class="row inline">
+                      <input type="checkbox" id="risOnBouncesCheckbox" />
+                      <label class="label" for="risOnBouncesCheckbox">ReSTIR - Use streaming RIS on bounces</label>
+                    </div>
                   </div>
+                </details>
+
+                <div class="row inline">
+                  <input type="checkbox" id="toneMappingCheckbox" />
+                  <label class="label" for="toneMappingCheckbox">Tone mapping</label>
                 </div>
-              </details>
 
-              <div class="row inline">
-                <input type="checkbox" id="viewBvh"/>
-                <label class="label" for="viewBvh">BVH visualization</label>
+                <details class="group">
+                  <summary>Material controls</summary>
+                  <div class="group-content">
+                    <div class="row inline">
+                      <input type="color" id="diffuseAlbedo" value="#ffffff" />
+                      <label class="label" for="diffuseAlbedo">Albedo</label>
+                    </div>
+
+                    <div class="row">
+                      <div class="row-top">
+                        <label class="label" for="roughness">Roughness</label>
+                      </div>
+                      <input type="range" id="roughness" min="0.1" max="1.0" step="0.05" value="0.1" />
+                    </div>
+
+                    <div class="row">
+                      <div class="row-top">
+                        <label class="label" for="metalness">Metalness</label>
+                      </div>
+                      <input type="range" id="metalness" min="0.0" max="1.0" step="0.05" value="1.0" />
+                    </div>
+                  </div>
+                </details>
+
+                <div class="row inline">
+                  <input type="checkbox" id="viewBvh"/>
+                  <label class="label" for="viewBvh">BVH visualization</label>
+                </div>
+
               </div>
-
             </div>
-          </div>
-        </details>
+          </details>
+        </div>
       </div>
-    </div>
+
+      <section class="controls-help">
+        <h3>Controls</h3>
+        <p><strong>Rotate camera:</strong> left click + drag</p>
+        <p><strong>Move camera:</strong> W/S forward-backward, A/D left-right, Q/E down-up. Arrow keys also supported</p>
+        <p><strong>Settings:</strong> use the debug panel at the top-left of the canvas</p>
+      </section>
+
+      <section class="report-section">
+        <h3>Implementation report</h3>
+        <iframe class="report-frame" src="/path-tracer/assets/ReSTIR_report.pdf"></iframe>
+      </section>
+    </main>
 
     <script type="module" src="/src/main.ts"></script>
   </body>
